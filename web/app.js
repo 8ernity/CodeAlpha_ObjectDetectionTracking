@@ -389,7 +389,7 @@ async function setSource(src, sampleKey = currentSampleClip) {
     }
     videoEl.src = clip.src;
     videoEl.crossOrigin = 'anonymous';
-    videoEl.loop = true;
+    videoEl.loop = false;
     try {
       await videoEl.play();
       addActivityLog('INPUT', `Loaded ${clip.name}`, 'lime');
@@ -418,7 +418,7 @@ function handleVideoFile(event) {
     videoEl.srcObject = null;
   }
   videoEl.src = url;
-  videoEl.loop = true;
+  videoEl.loop = false;
   videoEl.play();
 
   const headerTitle = document.getElementById('viewport-header-title');
@@ -692,9 +692,16 @@ function roundRect(ctx, x, y, width, height, radius = 4, fill = false, stroke = 
   if (stroke) ctx.stroke();
 }
 
+function formatTime(seconds) {
+  if (isNaN(seconds) || seconds < 0) return '00:00';
+  const mins = Math.floor(seconds / 60).toString().padStart(2, '0');
+  const secs = Math.floor(seconds % 60).toString().padStart(2, '0');
+  return `${mins}:${secs}`;
+}
+
 function updateTimecode(now) {
   let elapsed = (now - state.startTime) / 1000;
-  if (videoEl && !isNaN(videoEl.currentTime) && videoEl.currentTime > 0) {
+  if (videoEl && !isNaN(videoEl.currentTime)) {
     elapsed = videoEl.currentTime;
   }
   const mins = Math.floor(elapsed / 60).toString().padStart(2, '0');
@@ -705,6 +712,18 @@ function updateTimecode(now) {
   const frameEl = document.getElementById('playback-frame');
   if (timeEl) timeEl.innerText = `T+ 00:${mins}:${secs}.${ms}`;
   if (frameEl) frameEl.innerText = `Frame: #${state.frameCounter.toLocaleString('en-US')}`;
+
+  // Update Scrub Progress Bar & Duration Tag
+  const progressBar = document.getElementById('video-progress-bar');
+  const durTag = document.getElementById('video-duration-tag');
+  if (videoEl && !isNaN(videoEl.duration) && videoEl.duration > 0) {
+    const pct = Math.min(100, Math.max(0, (videoEl.currentTime / videoEl.duration) * 100));
+    if (progressBar) progressBar.style.width = `${pct}%`;
+    if (durTag) durTag.innerText = `${formatTime(videoEl.currentTime)} / ${formatTime(videoEl.duration)}`;
+  } else {
+    if (progressBar) progressBar.style.width = '0%';
+    if (durTag) durTag.innerText = `${formatTime(elapsed)} / Live`;
+  }
 }
 
 function updateMetricsDisplay() {
@@ -802,27 +821,194 @@ function clearLogs() {
   renderActivityFeed();
 }
 
-function togglePlayPause() {
-  state.isPaused = !state.isPaused;
-  const playIcon = document.getElementById('play-icon');
-  const playText = document.getElementById('play-text');
-  const btnPlay = document.getElementById('btn-play');
-  if (state.isPaused) {
-    videoEl.pause();
-    if (playIcon) playIcon.className = 'fa-solid fa-play text-xs';
-    if (playText) playText.innerText = 'Resume';
-    if (btnPlay) {
-      btnPlay.className = 'px-3.5 py-1.5 rounded-lg bg-obsidian-panel border border-lime text-lime font-bold text-xs flex items-center gap-2 hover:bg-lime/20 transition-all shadow-glow-lime';
+// Inside Video Player Controls Management
+let controlsHideTimer = null;
+let currentSpeed = 1.0;
+
+function showInVideoControls() {
+  const controls = document.getElementById('in-video-controls');
+  const header = document.getElementById('in-video-header');
+  if (controls) {
+    controls.style.opacity = '1';
+    controls.style.pointerEvents = 'auto';
+  }
+  if (header) {
+    header.style.opacity = '1';
+  }
+  clearTimeout(controlsHideTimer);
+  if (!state.isPaused && !videoEl.paused && !videoEl.ended) {
+    controlsHideTimer = setTimeout(() => {
+      if (!state.isPaused) {
+        if (controls) {
+          controls.style.opacity = '0';
+          controls.style.pointerEvents = 'none';
+        }
+        if (header) {
+          header.style.opacity = '0';
+        }
+      }
+    }, 2800);
+  }
+}
+
+function hideInVideoControls() {
+  const controls = document.getElementById('in-video-controls');
+  const header = document.getElementById('in-video-header');
+  if (!state.isPaused && !videoEl.paused && !videoEl.ended) {
+    if (controls) {
+      controls.style.opacity = '0';
+      controls.style.pointerEvents = 'none';
     }
-    addActivityLog('PLAYBACK', 'Paused stream', 'amber');
+    if (header) {
+      header.style.opacity = '0';
+    }
+  }
+}
+
+function showCenterRipple(type) {
+  const ripple = document.getElementById('center-play-ripple');
+  const icon = document.getElementById('center-ripple-icon');
+  if (!ripple || !icon) return;
+  
+  if (type === 'play') {
+    icon.className = 'fa-solid fa-play ml-1';
+  } else if (type === 'pause') {
+    icon.className = 'fa-solid fa-pause';
+  } else if (type === 'replay') {
+    icon.className = 'fa-solid fa-rotate-left';
+  }
+  
+  ripple.classList.remove('opacity-0', 'scale-50');
+  ripple.classList.add('opacity-100', 'scale-100');
+  
+  setTimeout(() => {
+    ripple.classList.remove('opacity-100', 'scale-100');
+    ripple.classList.add('opacity-0', 'scale-50');
+  }, 380);
+}
+
+function handleCanvasClick(event) {
+  togglePlayPause();
+}
+
+function nextSamplePreset() {
+  const nextKey = currentSampleClip === 'sample1' ? 'sample2' : 'sample1';
+  setSource('sample', nextKey);
+}
+
+const SPEED_PRESETS = [
+  { val: 0.5, id: 'speed-05' },
+  { val: 1.0, id: 'speed-10' },
+  { val: 1.5, id: 'speed-15' },
+  { val: 2.0, id: 'speed-20' }
+];
+
+function setSpeed(speed) {
+  currentSpeed = parseFloat(speed);
+  if (videoEl) {
+    videoEl.playbackRate = currentSpeed;
+  }
+  
+  SPEED_PRESETS.forEach(cfg => {
+    const btn = document.getElementById(cfg.id);
+    if (btn) {
+      if (Math.abs(cfg.val - currentSpeed) < 0.05) {
+        btn.className = 'px-2 py-0.5 rounded bg-lime text-black font-bold shadow-glow-lime text-[11px]';
+      } else {
+        btn.className = 'px-2 py-0.5 rounded text-gray-400 hover:text-white transition-all text-[11px]';
+      }
+    }
+  });
+  addActivityLog('PLAYBACK', `Playback speed: ${currentSpeed}x`, 'cyan');
+}
+
+function toggleMute() {
+  if (!videoEl) return;
+  videoEl.muted = !videoEl.muted;
+  const icon = document.getElementById('volume-icon');
+  const slider = document.getElementById('volume-slider');
+  if (videoEl.muted) {
+    if (icon) icon.className = 'fa-solid fa-volume-xmark text-red-400';
+    if (slider) slider.value = 0;
   } else {
-    videoEl.play();
-    if (playIcon) playIcon.className = 'fa-solid fa-pause text-xs';
-    if (playText) playText.innerText = 'Pause';
-    if (btnPlay) {
-      btnPlay.className = 'px-3.5 py-1.5 rounded-lg bg-lime text-black font-bold text-xs flex items-center gap-2 hover:bg-lime-glow transition-all shadow-glow-lime';
-    }
-    addActivityLog('PLAYBACK', 'Resumed stream', 'lime');
+    if (icon) icon.className = 'fa-solid fa-volume-high';
+    if (slider) slider.value = videoEl.volume || 1;
+  }
+}
+
+function setVolume(val) {
+  if (!videoEl) return;
+  videoEl.volume = parseFloat(val);
+  videoEl.muted = (videoEl.volume === 0);
+  const icon = document.getElementById('volume-icon');
+  if (videoEl.muted) {
+    if (icon) icon.className = 'fa-solid fa-volume-xmark text-red-400';
+  } else if (videoEl.volume < 0.5) {
+    if (icon) icon.className = 'fa-solid fa-volume-low';
+  } else {
+    if (icon) icon.className = 'fa-solid fa-volume-high';
+  }
+}
+
+function updatePlayPauseButton(status) {
+  const playIcon = document.getElementById('play-icon');
+  const btnPlay = document.getElementById('btn-play');
+  if (!btnPlay) return;
+
+  if (status === 'playing') {
+    if (playIcon) playIcon.className = 'fa-solid fa-pause';
+    btnPlay.className = 'w-8 h-8 rounded-lg bg-lime hover:bg-lime-glow text-black font-bold flex items-center justify-center text-xs transition-all shadow-glow-lime hover:scale-105 active:scale-95';
+    btnPlay.title = 'Pause Video (Space / P)';
+  } else if (status === 'ended') {
+    if (playIcon) playIcon.className = 'fa-solid fa-rotate-left';
+    btnPlay.className = 'w-8 h-8 rounded-lg bg-lime hover:bg-lime-glow text-black font-bold flex items-center justify-center text-xs transition-all shadow-glow-lime hover:scale-105 active:scale-95';
+    btnPlay.title = 'Replay Video (Space / P)';
+  } else { // paused
+    if (playIcon) playIcon.className = 'fa-solid fa-play ml-0.5';
+    btnPlay.className = 'w-8 h-8 rounded-lg bg-black/60 hover:bg-lime/20 border border-lime text-lime font-bold flex items-center justify-center text-xs transition-all shadow-glow-lime hover:scale-105 active:scale-95';
+    btnPlay.title = 'Play / Resume Video (Space / P)';
+  }
+}
+
+function togglePlayPause() {
+  if (videoEl.ended || (videoEl.duration && videoEl.currentTime >= videoEl.duration - 0.1)) {
+    videoEl.currentTime = 0;
+    state.isPaused = false;
+    videoEl.play().catch(() => {});
+    updatePlayPauseButton('playing');
+    showCenterRipple('replay');
+    showInVideoControls();
+    addActivityLog('PLAYBACK', 'Replaying video from beginning', 'lime');
+  } else if (state.isPaused || videoEl.paused) {
+    state.isPaused = false;
+    videoEl.play().catch(() => {});
+    updatePlayPauseButton('playing');
+    showCenterRipple('play');
+    showInVideoControls();
+    addActivityLog('PLAYBACK', 'Resumed video playback', 'lime');
+  } else {
+    state.isPaused = true;
+    videoEl.pause();
+    updatePlayPauseButton('paused');
+    showCenterRipple('pause');
+    showInVideoControls();
+    addActivityLog('PLAYBACK', 'Paused video stream', 'amber');
+  }
+}
+
+function seekVideo(event) {
+  if (!videoEl || isNaN(videoEl.duration) || videoEl.duration <= 0) return;
+  const bg = document.getElementById('video-progress-bg');
+  if (!bg) return;
+  const rect = bg.getBoundingClientRect();
+  const clickX = Math.max(0, Math.min(event.clientX - rect.left, rect.width));
+  const ratio = clickX / rect.width;
+  videoEl.currentTime = ratio * videoEl.duration;
+  
+  if (videoEl.ended) {
+    state.isPaused = false;
+    videoEl.play().catch(() => {});
+    updatePlayPauseButton('playing');
   }
 }
 
@@ -934,6 +1120,49 @@ function exportData(format) {
   a.click();
   addActivityLog('EXPORT', `Exported telemetry (${ext.toUpperCase()})`, 'lime');
 }
+
+// Video Event Listeners for seamless state sync & stop-on-end
+videoEl.addEventListener('ended', () => {
+  state.isPaused = true;
+  updatePlayPauseButton('ended');
+  addActivityLog('PLAYBACK', 'Video playback ended. Click Replay to restart.', 'amber');
+});
+
+videoEl.addEventListener('pause', () => {
+  if (!videoEl.ended) {
+    state.isPaused = true;
+    updatePlayPauseButton('paused');
+  }
+});
+
+videoEl.addEventListener('play', () => {
+  state.isPaused = false;
+  updatePlayPauseButton('playing');
+});
+
+// Keyboard shortcuts: Space / P for Play/Pause, S for Snapshot
+window.addEventListener('keydown', (e) => {
+  // Ignore if user is typing in an input
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.code === 'Space' || e.key === ' ' || e.key === 'p' || e.key === 'P') {
+    e.preventDefault();
+    togglePlayPause();
+  } else if (e.key === 'f' || e.key === 'F') {
+    e.preventDefault();
+    toggleFullscreen();
+  } else if (e.key === 'm' || e.key === 'M') {
+    e.preventDefault();
+    toggleMute();
+    e.preventDefault();
+    togglePlayPause();
+  } else if (e.key === 's' || e.key === 'S') {
+    e.preventDefault();
+    captureSnapshot();
+  } else if (e.key === 'r' || e.key === 'R') {
+    e.preventDefault();
+    resetTracking();
+  }
+});
 
 window.addEventListener('DOMContentLoaded', () => {
   initApp();
