@@ -37,53 +37,29 @@
 
 VisionGrid is designed as a modular, decoupled computer vision pipeline supporting real-time video ingestion, deep neural inference, kinematic trajectory estimation, and multi-channel telemetry dispatching:
 
-```
-┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
-│                                    VISIONGRID PIPELINE ARCHITECTURE                              │
-├───────────────────────────────────┬──────────────────────────────────────────────────────────────┤
-│ 1. INGESTION LAYER                │ • Live Webcam Stream (getUserMedia / OpenCV VideoCapture)    │
-│                                   │ • Multi-format Video Upload (.mp4, .avi, .mov, .mkv, .webm)   │
-│                                   │ • Embedded Benchmark Streams (Sample 1 & Sample 2)           │
-├───────────────────────────────────┼──────────────────────────────────────────────────────────────┤
-│ 2. INFERENCE & DISCRIMINATION     │ • Ultralytics YOLOv8 CNN (80 Microsoft COCO Classes)         │
-│                                   │ • Color-Moment & Aspect-Ratio Feline/Canine Refiner         │
-│                                   │ • Fast IoU Non-Maximum Suppression (NMS) Deduplication       │
-├───────────────────────────────────┼──────────────────────────────────────────────────────────────┤
-│ 3. TRACKING & KINEMATICS          │ • 7-Dimensional Continuous State Kalman Filter               │
-│                                   │ • Optimal Bipartite Matching via Hungarian Algorithm         │
-│                                   │ • Occlusion Management, Track Aging & Velocity Computation  │
-├───────────────────────────────────┼──────────────────────────────────────────────────────────────┤
-│ 4. SPATIAL & TELEMETRY ANALYTICS  │ • Bidirectional Virtual Counting Tripwire (Crossing Events)  │
-│                                   │ • Real-Time FPS, Latency (ms), Active Targets, Class Counts  │
-│                                   │ • Continuous Trajectory Path History & Speed Vectors (px/s)  │
-├───────────────────────────────────┼──────────────────────────────────────────────────────────────┤
-│ 5. PRESENTATION & DISPATCH        │ • VisionGrid Web Command Center (FastAPI + WebSocket + SVG)  │
-│                                   │ • Standalone High-Throughput OpenCV Desktop Engine (CLI/HUD) │
-│                                   │ • Telemetry Exporter (CSV, JSON, HD Video, PNG Snapshot)     │
-└───────────────────────────────────┴──────────────────────────────────────────────────────────────┘
-```
+| Pipeline Layer | Description | Architectural Core |
+| :--- | :--- | :--- |
+| 📹 **1. Ingestion Layer** | Ingests frames from live webcams, user-uploaded video files (`.mp4`, `.webm`, `.avi`), or built-in benchmark clips (`Sample 1` & `Sample 2`). | OpenCV `cv2.VideoCapture` + `getUserMedia` API |
+| 🧠 **2. Neural Detection & Refinement** | Executes deep CNN forward-pass across 80 COCO classes, applying specialized color-moment animal refinement and fast IoU Non-Maximum Suppression (NMS). | Ultralytics YOLOv8 Nano (`yolov8n.pt`) + PyTorch |
+| 🔄 **3. Kinematics & SORT Tracking** | Estimates 7D continuous state trajectories $(u, v, s, r, \dot{u}, \dot{v}, \dot{s})$ and resolves optimal bipartite data association across frame occlusions. | 7-State Kalman Filter + Hungarian Algorithm |
+| 🚧 **4. Spatial Analytics & Tripwire** | Computes directional crossings (`IN` / `OUT`), instantaneous target velocity vectors ($v_x, v_y$), real-time FPS, and per-class active distributions. | Vector Crossing Logic + Kinematic Velocity Engine |
+| 🌐 **5. Presentation & Telemetry Dispatch** | Serves the interactive Cyber Web Command Center over WebSockets with timeline scrubbing, while supporting headless OpenCV desktop execution. | FastAPI + WebSockets + HTML5 Canvas & OpenCV HUD |
 
 ---
 
-## 🌟 Key Capabilities & Highlights
+## ✨ Key Features
 
-### ⚡ Deep Learning Detection Engine
-- **80 COCO Object Categories**: Detects persons, vehicles (cars, buses, trucks, motorcycles, bicycles), domestic animals (dogs, cats, horses, sheep, cows), sports equipment, and indoor assets.
-- **Canine vs. Feline Discrimination**: Resolves typical deep learning misclassifications between cats and dogs using an integrated visual post-refinement stage (`core/detector.py`) that analyzes color moments, aspect ratios, and spatial kinematics.
-- **Fast IoU NMS**: Dynamic post-refinement deduplication eliminating ghost duplicate bounding boxes on complex outdoor scenes.
-
-### 🎯 Robust Multi-Object Tracking (SORT)
-- **7-State Vector Kinematic Filtering**: Continuous estimation of target centroid $(u, v)$, bounding box scale $s = w 	imes h$, aspect ratio $r = w / h$, and their respective velocity derivatives $(\dot{u}, \dot{v}, \dot{s})$.
-- **Optimal Data Association**: Hungarian algorithm bipartite matching over an IoU cost matrix ensures stable identity persistence across temporary occlusions.
-- **Instantaneous Velocity & Trajectory Trails**: Computes velocity vectors in pixels per second and renders smooth fading motion trails.
-
-### 🌐 Cyber Command Center Web Interface
-- **Modern Dark Grey Theme**: Sleek `#121316` base canvas paired with `#181a1f` surface cards, `#20232a` panels, and vibrant lime (`#a3e635`) / cyan (`#22d3ee`) telemetry accents.
-- **Cyber Vault Theme Switcher**: Interactive dual-state toggle with fractal noise texture and glowing circuit paths (**LIGHT** in warm yellow, **DARK** in neon cyan).
-- **Live KPI Telemetry Ribbon**: Real-time cards displaying **FPS**, **Inference Latency (ms)**, **Active Targets**, **Total Lifetime Tracks**, **Tripwire IN**, and **Tripwire OUT**.
-- **Quick Class Filtering**: 1-click sidebar pills to isolate specific classes: `All`, `Person`, `Vehicles`, `Animals`, and `Electronics`.
-- **Interactive Control Suite**: Sliders for Confidence Threshold, Track Max Age, and Tripwire Y-Position, with instant overlay toggles for Bounding Boxes, Labels, Tracking IDs, and Counting Tripwire.
-- **Telemetry Export Suite**: Download timestamped telemetry in structured **JSON** or tabular **CSV**, export tracked **HD Video (.webm)**, or capture **High-Res PNG** snapshots.
+| Feature | Description | Architectural Core |
+| :--- | :--- | :--- |
+| 🚀 **Deep Neural Object Detector** | High-throughput object detection across 80 Microsoft COCO classes with bounding box localization and confidence scoring. | Ultralytics YOLOv8 CNN + PyTorch CUDA/CPU |
+| 🎯 **Feline / Canine Visual Discriminator** | Post-processing visual refiner resolving fine-grained quadruped ambiguities using HSV chromaticity moments and aspect-ratio kinematics. | Color-Moment Analyzer (`core/detector.py`) |
+| ⚡ **Fast IoU NMS Deduplication** | Dynamic post-inference spatial suppression eliminating ghost bounding boxes and duplicate detections in dense frames. | Greedy IoU Non-Maximum Suppression |
+| 🔄 **7-State Kalman Filter Tracking** | Continuous state-space motion filtering modeling centroid $(u, v)$, area scale $s$, aspect ratio $r$, and linear velocities $(\dot{u}, \dot{v}, \dot{s})$. | Linear Dynamical Kalman Filter (`tracker/sort.py`) |
+| 🧩 **Hungarian Data Association** | Solves global multi-object tracking assignments as a minimum-cost bipartite matching problem across the IoU cost matrix. | SciPy Munkres Linear Assignment Algorithm |
+| 🚧 **Bidirectional Virtual Tripwire** | Stateful counting tripwire evaluating centroid vector crossings $(y_{\text{prev}} \to y_{\text{curr}})$ to track directional traffic (`IN` / `OUT`). | Spatial Boundary State Machine |
+| 🌐 **Cyber Web Command Center** | Real-time FastAPI WebSocket dashboard featuring live KPI ribbons, interactive timeline scrubber, class filters, and Cyber Vault theme switcher. | FastAPI + WebSockets + TailwindCSS |
+| 🖥️ **Standalone OpenCV Desktop HUD** | High-performance CLI engine with real-time HUD telemetry overlay, interactive hotkeys, video recording (`--save`), and CSV logging (`--save-log`). | OpenCV `cv2.imshow` + Multi-Threaded VideoStream |
+| 📊 **Telemetry Export Suite** | Instant client-side and server-side data extraction exporting timestamped audit trails in JSON, structured CSV, PNG snapshots, and WebM video. | Client-side Blob Serialization + CSV Logger |
 
 ---
 
