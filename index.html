@@ -1,0 +1,977 @@
+<!DOCTYPE html>
+<html class="dark" lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg"/>
+  <title>VisionGrid</title>
+  
+  <!-- BEGIN: External Fonts & Icons -->
+  <link href="https://fonts.googleapis.com" rel="preconnect"/>
+  <link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet"/>
+  <!-- END: External Fonts & Icons -->
+
+    <!-- BEGIN: TensorFlow.js & COCO-SSD for Decoupled 60 FPS Web AI -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+  <!-- END: TensorFlow.js & COCO-SSD -->
+
+  <!-- BEGIN: Tailwind CDN & Config -->
+  <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+  <script data-purpose="tailwind-config">
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            obsidian: {
+              base: '#121316',
+              surface: '#181a1f',
+              panel: '#20232a',
+              card: '#1c1f26',
+              border: '#2d323c',
+              hover: '#282c35'
+            },
+            lime: {
+              DEFAULT: '#a3e635',
+              glow: '#84cc16',
+              dim: '#4d7c0f',
+              muted: 'rgba(163, 230, 53, 0.12)'
+            },
+            cyan: {
+              accent: '#22d3ee',
+              muted: 'rgba(34, 211, 238, 0.15)'
+            }
+          },
+          fontFamily: {
+            sans: ['Inter', 'system-ui', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'monospace']
+          },
+          boxShadow: {
+            'glow-lime': '0 0 16px -2px rgba(163, 230, 53, 0.35)',
+            'glow-cyan': '0 0 16px -2px rgba(34, 211, 238, 0.3)',
+            'inner-panel': 'inset 0 1px 0 0 rgba(255, 255, 255, 0.05)'
+          }
+        }
+      }
+    }
+  </script>
+  <!-- END: Tailwind CDN & Config -->
+
+  <!-- BEGIN: Custom Micro-Styles -->
+  <style data-purpose="custom-sliders">
+    input[type=range] {
+      -webkit-appearance: none;
+      appearance: none;
+      background: #2d323c;
+      height: 4px;
+      border-radius: 9999px;
+    }
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: #a3e635;
+      cursor: pointer;
+      box-shadow: 0 0 10px #a3e635;
+      transition: transform 0.1s ease;
+    }
+    input[type=range]::-webkit-slider-thumb:hover {
+      transform: scale(1.2);
+    }
+  
+    /* BEGIN: UX Vault Light/Dark Cyber Toggle */
+    .ux-vault-toggle {
+      --color-slate-base: #1e2229;
+      --color-slate-dark: #121418;
+      --color-slate-light: #2c323d;
+      --color-yellow: #facc15;
+      --color-cyan: #00f0ff;
+      --color-text-dim: #64748b;
+      --track-w: 82px;
+      --track-h: 34px;
+      --thumb-size: 26px;
+      display: inline-block;
+      position: relative;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+    }
+
+    .ux-vault-toggle__input {
+      position: absolute;
+      opacity: 0;
+      width: 0;
+      height: 0;
+      pointer-events: none;
+    }
+
+    .ux-vault-toggle__wrapper {
+      width: var(--track-w);
+      height: var(--track-h);
+      position: relative;
+      border-radius: 9999px;
+      background: var(--color-slate-base);
+      box-shadow:
+        0 0 0 1.5px var(--color-slate-dark),
+        0 4px 12px rgba(0, 0, 0, 0.6);
+      isolation: isolate;
+    }
+
+    .ux-vault-toggle__filter {
+      position: absolute;
+      pointer-events: none;
+    }
+
+    .ux-vault-toggle__track {
+      position: absolute;
+      inset: 2px;
+      border-radius: 9999px;
+      background: var(--color-slate-dark);
+      box-shadow:
+        inset 0 4px 8px rgba(0, 0, 0, 0.9),
+        inset 0 2px 4px rgba(0, 0, 0, 0.7),
+        inset 0 -1px 2px rgba(255, 255, 255, 0.04);
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+    }
+
+    .ux-vault-toggle__texture {
+      position: absolute;
+      inset: 0;
+      background: var(--color-slate-dark);
+      filter: url(#ux-metal-noise);
+      opacity: 0.6;
+      mix-blend-mode: overlay;
+      pointer-events: none;
+    }
+
+    .ux-vault-toggle__circuit {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 1;
+    }
+
+    .ux-circuit-path {
+      fill: none;
+      stroke-width: 2;
+      stroke-dasharray: 100;
+      stroke-linecap: round;
+      transition:
+        stroke-dashoffset 0.6s cubic-bezier(0.65, 0, 0.35, 1),
+        stroke 0.6s ease,
+        opacity 0.6s ease;
+    }
+
+    .ux-circuit--dark {
+      stroke: var(--color-cyan);
+      stroke-dashoffset: 0;
+      opacity: 0.5;
+    }
+
+    .ux-circuit--light {
+      stroke: var(--color-yellow);
+      stroke-dashoffset: 100;
+      opacity: 0.5;
+    }
+
+    .ux-vault-toggle__status {
+      position: absolute;
+      font-family: 'JetBrains Mono', monospace, system-ui, sans-serif;
+      font-weight: 800;
+      font-size: 9.5px;
+      letter-spacing: 0.8px;
+      display: flex;
+      z-index: 2;
+    }
+
+    .ux-vault-toggle__status span {
+      display: inline-block;
+      transition:
+        transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1),
+        opacity 0.4s ease,
+        color 0.4s ease;
+      transition-delay: calc(var(--i) * 0.035s);
+    }
+
+    .ux-vault-toggle__status--dark {
+      right: 9px;
+      color: var(--color-cyan);
+      text-shadow: 0 0 6px rgba(0, 240, 255, 0.6);
+    }
+
+    .ux-vault-toggle__status--light {
+      left: 8px;
+      font-size: 9px;
+      letter-spacing: 0.4px;
+      color: var(--color-yellow);
+      text-shadow: 0 0 6px rgba(250, 204, 21, 0.6);
+    }
+
+    .ux-vault-toggle__status--light span {
+      opacity: 0;
+      transform: translateY(8px) scale(0.8);
+      color: var(--color-text-dim);
+    }
+
+    .ux-vault-toggle__thumb {
+      position: absolute;
+      top: 4px;
+      left: 4px;
+      width: var(--thumb-size);
+      height: var(--thumb-size);
+      border-radius: 50%;
+      background: linear-gradient(
+        145deg,
+        var(--color-slate-light),
+        var(--color-slate-base)
+      );
+      box-shadow:
+        0 3px 8px rgba(0, 0, 0, 0.6),
+        0 1px 3px rgba(0, 0, 0, 0.5),
+        inset 0 1px 2px rgba(255, 255, 255, 0.2),
+        inset 0 -2px 4px rgba(0, 0, 0, 0.5);
+      z-index: 3;
+      transition: transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    .ux-vault-toggle__thumb-ring {
+      position: absolute;
+      inset: 2px;
+      border-radius: 50%;
+      background: linear-gradient(to bottom, #383c44, #14171a);
+      box-shadow: inset 0 1.5px 2px rgba(0, 0, 0, 0.8);
+      z-index: 1;
+    }
+
+    .ux-vault-toggle__thumb-core {
+      position: absolute;
+      inset: 3.5px;
+      border-radius: 50%;
+      background: var(--color-slate-dark);
+      border: 1.8px solid var(--color-cyan);
+      box-shadow:
+        inset 0 0 6px rgba(0, 240, 255, 0.4),
+        0 0 10px rgba(0, 240, 255, 0.5);
+      z-index: 2;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition:
+        border-color 0.6s ease,
+        box-shadow 0.6s ease;
+    }
+
+    .ux-thumb-icon {
+      width: 11px;
+      height: 11px;
+      color: var(--color-cyan);
+      transition:
+        color 0.6s ease,
+        transform 0.6s cubic-bezier(0.68, -0.55, 0.265, 1.55);
+    }
+
+    .ux-vault-toggle__thumb-glare {
+      position: absolute;
+      top: 1px;
+      left: 10%;
+      width: 80%;
+      height: 40%;
+      border-radius: 50%;
+      background: linear-gradient(
+        to bottom,
+        rgba(255, 255, 255, 0.25),
+        transparent
+      );
+      z-index: 4;
+      pointer-events: none;
+    }
+
+    .ux-vault-toggle__input:checked
+      ~ .ux-vault-toggle__wrapper
+      .ux-vault-toggle__thumb {
+      transform: translateX(48px);
+    }
+
+    .ux-vault-toggle__input:checked
+      ~ .ux-vault-toggle__wrapper
+      .ux-vault-toggle__thumb-core {
+      border-color: var(--color-yellow);
+      box-shadow:
+        inset 0 0 8px rgba(250, 204, 21, 0.45),
+        0 0 12px rgba(250, 204, 21, 0.6);
+    }
+
+    .ux-vault-toggle__input:checked ~ .ux-vault-toggle__wrapper .ux-thumb-icon {
+      color: var(--color-yellow);
+      transform: rotate(180deg) scale(1.1);
+    }
+
+    .ux-vault-toggle__input:checked ~ .ux-vault-toggle__wrapper .ux-circuit--dark {
+      stroke-dashoffset: -100;
+      opacity: 0;
+    }
+
+    .ux-vault-toggle__input:checked ~ .ux-vault-toggle__wrapper .ux-circuit--light {
+      stroke-dashoffset: 0;
+      opacity: 0.8;
+    }
+
+    .ux-vault-toggle__input:checked
+      ~ .ux-vault-toggle__wrapper
+      .ux-vault-toggle__status--dark
+      span {
+      opacity: 0;
+      transform: translateY(-8px) scale(0.8);
+      color: var(--color-text-dim);
+    }
+
+    .ux-vault-toggle__input:checked
+      ~ .ux-vault-toggle__wrapper
+      .ux-vault-toggle__status--light
+      span {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+      color: var(--color-yellow);
+    }
+
+    .ux-vault-toggle:hover .ux-vault-toggle__thumb-core {
+      box-shadow:
+        inset 0 0 10px rgba(0, 240, 255, 0.5),
+        0 0 16px rgba(0, 240, 255, 0.7);
+    }
+
+    .ux-vault-toggle__input:checked:hover
+      ~ .ux-vault-toggle__wrapper
+      .ux-vault-toggle__thumb-core {
+      box-shadow:
+        inset 0 0 10px rgba(250, 204, 21, 0.6),
+        0 0 16px rgba(250, 204, 21, 0.75);
+    }
+
+    .ux-vault-toggle:active .ux-vault-toggle__thumb {
+      transform: scale(0.95);
+    }
+
+    .ux-vault-toggle__input:checked:active
+      ~ .ux-vault-toggle__wrapper
+      .ux-vault-toggle__thumb {
+      transform: translateX(48px) scale(0.95);
+    }
+    /* END: UX Vault Light/Dark Cyber Toggle */
+
+  </style>
+  <style data-purpose="scrollbar-and-radar">
+    /* Custom Sleek Scrollbar */
+    ::-webkit-scrollbar {
+      width: 5px;
+      height: 5px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #121316;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #2d323c;
+      border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #3d4452;
+    }
+
+    /* Subtle Animated Pulse for Live Dots */
+    @keyframes pulse-ring {
+      0% { transform: scale(0.95); opacity: 0.8; }
+      50% { transform: scale(1.2); opacity: 0.3; }
+      100% { transform: scale(0.95); opacity: 0.8; }
+    }
+    .live-pulse {
+      animation: pulse-ring 2.5s infinite ease-in-out;
+    }
+
+    /* Enhanced High-Contrast Light Theme */
+    html.light body {
+      background-color: #f8fafc;
+      color: #0f172a;
+    }
+    html.light header {
+      background-color: #ffffff !important;
+      border-color: #e2e8f0 !important;
+    }
+    html.light aside, html.light section, html.light footer {
+      background-color: #ffffff !important;
+      border-color: #e2e8f0 !important;
+    }
+    html.light .bg-obsidian-base { background-color: #f1f5f9 !important; }
+    html.light .bg-obsidian-surface, html.light .bg-obsidian-surface\/90 { background-color: #ffffff !important; }
+    html.light .bg-obsidian-panel { background-color: #f8fafc !important; }
+    html.light .bg-obsidian-card { 
+      background-color: #ffffff !important; 
+      border-color: #e2e8f0 !important;
+      box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05), 0 1px 2px -1px rgba(0, 0, 0, 0.05);
+    }
+    html.light .border-obsidian-border, html.light .border-obsidian-border\/70 { border-color: #e2e8f0 !important; }
+    html.light .text-white { color: #0f172a !important; }
+    html.light .text-gray-200 { color: #1e293b !important; }
+    html.light .text-gray-300 { color: #334155 !important; }
+    html.light .text-gray-400 { color: #64748b !important; }
+    html.light .text-gray-500 { color: #94a3b8 !important; }
+
+    /* High contrast vibrant lime & green in light mode */
+    html.light .text-lime { color: #15803d !important; }
+    html.light .bg-lime { background-color: #16a34a !important; color: #ffffff !important; }
+    html.light .bg-lime\/10, html.light .bg-lime-muted { 
+      background-color: #f0fdf4 !important; 
+      color: #15803d !important;
+    }
+    html.light .border-lime, html.light .border-lime\/20, html.light .border-lime\/30, html.light .border-lime\/40 { 
+      border-color: #86efac !important; 
+    }
+    html.light .shadow-glow-lime {
+      box-shadow: 0 2px 8px -1px rgba(22, 163, 74, 0.25) !important;
+    }
+
+    /* High contrast vibrant cyan in light mode */
+    html.light .text-cyan-accent { color: #0284c7 !important; }
+    html.light .bg-cyan-muted { background-color: #f0f9ff !important; color: #0369a1 !important; }
+    html.light .border-cyan-accent\/20, html.light .border-cyan-accent\/30, html.light .border-cyan-accent\/40 { 
+      border-color: #7dd3fc !important; 
+    }
+
+    /* Sliders in light mode */
+    html.light input[type=range] {
+      background: #e2e8f0;
+    }
+    html.light input[type=range]::-webkit-slider-thumb {
+      background: #16a34a;
+      box-shadow: 0 0 8px rgba(22, 163, 74, 0.4);
+    }
+
+    /* Filter pills & buttons in light mode */
+    html.light .filter-pill.bg-lime {
+      background-color: #16a34a !important;
+      color: #ffffff !important;
+    }
+    html.light .filter-pill.bg-obsidian-panel {
+      background-color: #f1f5f9 !important;
+      border-color: #e2e8f0 !important;
+      color: #334155 !important;
+    }
+    html.light .filter-pill.bg-obsidian-panel:hover {
+      background-color: #e2e8f0 !important;
+      color: #0f172a !important;
+    }
+
+    /* Playback & Action Buttons in light mode */
+    html.light #btn-play.bg-lime {
+      background-color: #16a34a !important;
+      color: #ffffff !important;
+    }
+    html.light #btn-play.bg-obsidian-panel {
+      background-color: #f8fafc !important;
+      border-color: #16a34a !important;
+      color: #15803d !important;
+    }
+
+    /* Terminal activity log in light mode */
+    html.light #activity-feed {
+      background-color: #0f172a !important;
+      border-color: #1e293b !important;
+      color: #e2e8f0 !important;
+    }
+
+    /* Scrollbar in light mode */
+    html.light ::-webkit-scrollbar-track {
+      background: #f1f5f9;
+    }
+    html.light ::-webkit-scrollbar-thumb {
+      background: #cbd5e1;
+    }
+    html.light ::-webkit-scrollbar-thumb:hover {
+      background: #94a3b8;
+    }
+  </style>
+  <!-- END: Custom Micro-Styles -->
+</head>
+<body class="bg-obsidian-base text-gray-200 font-sans h-screen w-screen overflow-hidden flex flex-col antialiased select-none">
+  <!-- BEGIN: TopHeader -->
+  <header class="h-16 border-b border-obsidian-border bg-obsidian-surface px-5 flex items-center justify-between z-20 shrink-0">
+    <!-- Brand Logo -->
+    <div class="flex items-center">
+      <img src="LogoText.png" alt="VisionGrid Logo" class="h-12 w-auto object-contain drop-shadow select-none transition-transform duration-200 hover:scale-[1.03]" />
+    </div>
+
+    <!-- Execution Backend Mode & Global Actions -->
+    <div class="flex items-center gap-3">
+      <!-- Python Backend Engine Badge -->
+      <div class="bg-obsidian-panel px-3 py-1.5 rounded-lg border border-obsidian-border flex items-center text-xs font-semibold text-lime gap-2 shadow-inner-panel">
+        <i class="fa-brands fa-python text-sm text-lime"></i>
+        <span class="font-mono text-gray-200">Python Backend (YOLOv8 + SORT)</span>
+        <span class="relative flex h-2 w-2">
+          <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-lime opacity-75"></span>
+          <span class="relative inline-flex rounded-full h-2 w-2 bg-lime"></span>
+        </span>
+      </div>
+
+      <div class="h-4 w-[1px] bg-obsidian-border"></div>
+      
+      <!-- Cyber Vault Light/Dark Switcher -->
+      <label class="ux-vault-toggle" title="Switch Theme (Light / Dark)">
+        <input type="checkbox" id="theme-toggle-checkbox" class="ux-vault-toggle__input" onchange="toggleThemeFromCheckbox(this.checked)" />
+        <div class="ux-vault-toggle__wrapper">
+          <svg class="ux-vault-toggle__filter" width="0" height="0">
+            <defs>
+              <filter id="ux-metal-noise">
+                <feTurbulence
+                  type="fractalNoise"
+                  baseFrequency="0.75"
+                  numOctaves="3"
+                  result="noise"
+                ></feTurbulence>
+                <feColorMatrix
+                  type="matrix"
+                  values="1 0 0 0 0 0 1 0 0 0 0 0 1 0 0 0 0 0 0.12 0"
+                  in="noise"
+                  result="coloredNoise"
+                ></feColorMatrix>
+                <feComposite
+                  operator="in"
+                  in="coloredNoise"
+                  in2="SourceGraphic"
+                  result="composite"
+                ></feComposite>
+                <feBlend mode="multiply" in="composite" in2="SourceGraphic"></feBlend>
+              </filter>
+            </defs>
+          </svg>
+          <div class="ux-vault-toggle__track">
+            <div class="ux-vault-toggle__texture"></div>
+            <svg class="ux-vault-toggle__circuit" viewBox="0 0 100 44">
+              <path
+                d="M 28 22 L 46 22 L 56 14 L 88 14"
+                class="ux-circuit-path ux-circuit--dark"
+              ></path>
+              <path
+                d="M 12 30 L 44 30 L 54 22 L 72 22"
+                class="ux-circuit-path ux-circuit--light"
+              ></path>
+            </svg>
+            <div class="ux-vault-toggle__status ux-vault-toggle__status--dark">
+              <span style="--i:1">D</span><span style="--i:2">A</span
+              ><span style="--i:3">R</span><span style="--i:4">K</span>
+            </div>
+            <div class="ux-vault-toggle__status ux-vault-toggle__status--light">
+              <span style="--i:1">L</span><span style="--i:2">I</span
+              ><span style="--i:3">G</span><span style="--i:4">H</span
+              ><span style="--i:5">T</span>
+            </div>
+          </div>
+          <div class="ux-vault-toggle__thumb">
+            <div class="ux-vault-toggle__thumb-ring"></div>
+            <div class="ux-vault-toggle__thumb-core">
+              <svg
+                class="ux-thumb-icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <circle cx="12" cy="12" r="5"></circle>
+                <path d="M12 2 L12 5 M12 19 L12 22 M2 12 L5 12 M19 12 L22 12"></path>
+              </svg>
+            </div>
+            <div class="ux-vault-toggle__thumb-glare"></div>
+          </div>
+        </div>
+      </label>
+
+    </div>
+  </header>
+  <!-- END: TopHeader -->
+
+  <!-- BEGIN: Master Horizontal Layout (Sidebar on Left, 6 Cards + Viewport on Right) -->
+  <div class="flex-1 flex overflow-hidden">
+    <!-- BEGIN: LeftSidebar - Control Panel (Starts directly under Header) -->
+    <aside class="w-84 md:w-84 bg-obsidian-surface border-r border-obsidian-border flex flex-col justify-between shrink-0 overflow-y-auto z-10" style="width: 21rem;" data-purpose="control-panel">
+      <div class="p-3.5 space-y-4">
+        <!-- Input Source Selector -->
+        <div>
+          <label class="text-[10px] font-mono uppercase tracking-wider text-gray-400 mb-1.5 block">Input Source</label>
+          <div class="grid grid-cols-3 gap-1.5 text-xs font-mono">
+            <button id="src-webcam" onclick="setSource('webcam')" class="p-2.5 rounded-lg bg-obsidian-panel border border-obsidian-border text-gray-300 hover:border-lime/30 hover:text-white flex flex-col items-center justify-center gap-1.5 transition-all">
+              <i class="fa-solid fa-video text-xs text-gray-400"></i>
+              <span class="text-[11px]">Webcam</span>
+            </button>
+            <button id="src-upload" onclick="triggerVideoUpload()" class="p-2.5 rounded-lg bg-obsidian-panel border border-obsidian-border text-gray-300 hover:border-lime/30 hover:text-white flex flex-col items-center justify-center gap-1.5 transition-all">
+              <i class="fa-solid fa-arrow-up-from-bracket text-xs text-gray-400"></i>
+              <span class="text-[11px]">Upload</span>
+            </button>
+            <button id="src-sample" onclick="setSource('sample')" class="p-2.5 rounded-lg bg-lime/10 border border-lime/40 text-lime font-medium flex flex-col items-center justify-center gap-1.5 shadow-glow-lime">
+              <i class="fa-solid fa-file-video text-xs text-lime"></i>
+              <span class="text-[11px]">Sample</span>
+            </button>
+          </div>
+          <input type="file" id="video-upload-input" accept="video/mp4,video/webm,video/ogg" onchange="handleVideoFile(event)" style="display:none;">
+
+          <!-- Sample Presets (Sample 1 / Sample 2) -->
+          <div id="sample-preset-container" class="mt-2 p-1.5 bg-obsidian-panel rounded-lg border border-obsidian-border flex items-center justify-between gap-1.5 text-[11px] font-mono">
+            <button id="btn-sample-1" onclick="loadSampleClip('sample1')" class="flex-1 py-1.5 px-2 rounded bg-lime/15 border border-lime/40 text-lime font-bold shadow-glow-lime flex items-center justify-center gap-1.5 transition-all">
+              <i class="fa-solid fa-play text-[10px] text-lime"></i>
+              <span>Sample 1</span>
+            </button>
+            <button id="btn-sample-2" onclick="loadSampleClip('sample2')" class="flex-1 py-1.5 px-2 rounded text-gray-300 hover:text-white hover:bg-obsidian-surface border border-transparent hover:border-lime/30 transition-all flex items-center justify-center gap-1.5">
+              <i class="fa-solid fa-play text-[10px] text-lime"></i>
+              <span>Sample 2</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Filter Object Class -->
+        <div class="pt-2 border-t border-obsidian-border/70">
+          <label class="text-[10px] font-mono uppercase tracking-wider text-gray-400 mb-2 block">Filter Object Class</label>
+          <div class="flex flex-wrap gap-1.5 text-xs font-mono" id="filter-pills-container">
+            <button class="filter-pill px-2.5 py-1 rounded bg-lime text-black font-bold shadow-glow-lime" onclick="filterClass('all', this)">All</button>
+            <button class="filter-pill px-2.5 py-1 rounded bg-obsidian-panel border border-obsidian-border text-gray-300 hover:text-white hover:border-lime/30 transition-all" onclick="filterClass('person', this)">Person</button>
+            <button class="filter-pill px-2.5 py-1 rounded bg-obsidian-panel border border-obsidian-border text-gray-300 hover:text-white hover:border-lime/30 transition-all" onclick="filterClass('vehicles', this)">Vehicles</button>
+            <button class="filter-pill px-2.5 py-1 rounded bg-obsidian-panel border border-obsidian-border text-gray-300 hover:text-white hover:border-lime/30 transition-all" onclick="filterClass('animals', this)">Animals</button>
+            <button class="filter-pill px-2.5 py-1 rounded bg-obsidian-panel border border-obsidian-border text-gray-300 hover:text-white hover:border-lime/30 transition-all" onclick="filterClass('electronics', this)">Electronics</button>
+          </div>
+        </div>
+
+        <!-- Model Parameters -->
+        <div class="space-y-3 pt-2 border-t border-obsidian-border/70">
+          <label class="text-[10px] font-mono uppercase tracking-wider text-gray-400 block">Model Parameters</label>
+          <!-- Slider 1: Confidence -->
+          <div>
+            <div class="flex justify-between items-center text-xs mb-1">
+              <span class="text-gray-300 font-sans">Confidence Threshold</span>
+              <span id="conf-val" class="font-mono text-lime font-semibold text-[11px] bg-lime-muted px-1.5 py-0.5 rounded border border-lime/20">35%</span>
+            </div>
+            <input class="w-full" max="95" min="10" type="range" value="35" id="conf-slider" oninput="updateConfidence(this.value)"/>
+          </div>
+          <!-- Slider 2: Track Max Age -->
+          <div>
+            <div class="flex justify-between items-center text-xs mb-1">
+              <span class="text-gray-300 font-sans">Track Max Age</span>
+              <span id="age-val" class="font-mono text-lime font-semibold text-[11px] bg-lime-muted px-1.5 py-0.5 rounded border border-lime/20">25 frames</span>
+            </div>
+            <input class="w-full" max="60" min="5" type="range" value="25" id="age-slider" oninput="updateMaxAge(this.value)"/>
+          </div>
+          <!-- Slider 3: Tripwire Position -->
+          <div>
+            <div class="flex justify-between items-center text-xs mb-1">
+              <span class="text-gray-300 font-sans">Tripwire Line Position</span>
+              <span id="line-val" class="font-mono text-lime font-semibold text-[11px] bg-lime-muted px-1.5 py-0.5 rounded border border-lime/20">50%</span>
+            </div>
+            <input class="w-full" max="90" min="10" type="range" value="50" id="line-slider" oninput="updateLinePos(this.value)"/>
+          </div>
+        </div>
+
+        <!-- Feature & Overlay Toggles -->
+        <div class="space-y-2.5 pt-2 border-t border-obsidian-border/70">
+          <label class="text-[10px] font-mono uppercase tracking-wider text-gray-400 mb-2 block">Feature &amp; Overlay Toggles</label>
+          
+          <div class="flex items-center justify-between text-xs py-1">
+            <span class="text-gray-300">Bounding Boxes</span>
+            <label class="relative inline-flex items-center cursor-pointer">
+              <input id="toggle-boxes" checked="" class="sr-only peer" type="checkbox" onchange="toggleSetting('boxes')"/>
+              <div class="w-7 h-4 bg-obsidian-border peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-lime"></div>
+            </label>
+          </div>
+          
+          <div class="flex items-center justify-between text-xs py-1">
+            <span class="text-gray-300">Labels &amp; Confidence %</span>
+            <label class="relative inline-flex items-center cursor-pointer">
+              <input id="toggle-labels" checked="" class="sr-only peer" type="checkbox" onchange="toggleSetting('labels')"/>
+              <div class="w-7 h-4 bg-obsidian-border peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-lime"></div>
+            </label>
+          </div>
+          
+          <div class="flex items-center justify-between text-xs py-1">
+            <span class="text-gray-300">Unique Tracking IDs</span>
+            <label class="relative inline-flex items-center cursor-pointer">
+              <input id="toggle-ids" class="sr-only peer" type="checkbox" onchange="toggleSetting('ids')"/>
+              <div class="w-7 h-4 bg-obsidian-border peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-lime"></div>
+            </label>
+          </div>
+          
+          <div class="flex items-center justify-between text-xs py-1">
+            <span class="text-gray-300">Counting Tripwire Line</span>
+            <label class="relative inline-flex items-center cursor-pointer">
+              <input id="toggle-line" class="sr-only peer" type="checkbox" onchange="toggleSetting('line')"/>
+              <div class="w-7 h-4 bg-obsidian-border peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-lime"></div>
+            </label>
+          </div>
+        </div>
+      </div>
+
+
+    </aside>
+    <!-- END: LeftSidebar -->
+
+    <!-- BEGIN: Main Stage & Right Panel (Starts AFTER the Left Sidebar) -->
+    <div class="flex-1 flex flex-col min-w-0 overflow-hidden">
+      <!-- BEGIN: MetricsRibbon (6 KPI Cards - Extra Length & Prominent KPI Cards) -->
+      <section class="h-28 bg-obsidian-surface border-b border-obsidian-border px-4 py-3 grid grid-cols-6 gap-3.5 shrink-0" data-purpose="telemetry-overview-bar">
+        <!-- Metric 1: FPS -->
+        <div class="bg-obsidian-card border border-obsidian-border rounded-xl px-3.5 py-2.5 flex items-center justify-between shadow-inner-panel hover:border-lime/30 transition-all">
+          <div class="flex flex-col justify-between h-full">
+            <span class="text-[11px] uppercase font-mono tracking-wider text-gray-400 font-semibold block">Frame Rate</span>
+            <div class="flex items-baseline gap-1.5 my-auto">
+              <span class="text-3xl lg:text-4xl font-bold font-mono text-white tracking-tight" id="val-fps">60.0</span>
+              <span class="text-xs font-mono text-lime font-semibold">FPS</span>
+            </div>
+            <span class="text-[9px] font-mono text-gray-500">Target 60Hz</span>
+          </div>
+          <div class="w-11 h-11 rounded-xl bg-lime/10 border border-lime/30 flex items-center justify-center text-lime shadow-glow-lime shrink-0">
+            <i class="fa-solid fa-gauge-high text-sm"></i>
+          </div>
+        </div>
+
+        <!-- Metric 2: Latency -->
+        <div class="bg-obsidian-card border border-obsidian-border rounded-xl px-3.5 py-2.5 flex items-center justify-between shadow-inner-panel hover:border-cyan-accent/30 transition-all">
+          <div class="flex flex-col justify-between h-full">
+            <span class="text-[11px] uppercase font-mono tracking-wider text-gray-400 font-semibold block">Inference Latency</span>
+            <div class="flex items-baseline gap-1.5 my-auto">
+              <span class="text-3xl lg:text-4xl font-bold font-mono text-lime tracking-tight" id="val-latency">15.0</span>
+              <span class="text-xs font-mono text-gray-400">ms</span>
+            </div>
+            <span class="text-[9px] font-mono text-lime/80 font-medium">YOLOv8 Engine</span>
+          </div>
+          <div class="w-11 h-11 rounded-xl bg-cyan-muted border border-cyan-accent/30 flex items-center justify-center text-cyan-accent shadow-glow-cyan shrink-0">
+            <i class="fa-solid fa-bolt-lightning text-sm"></i>
+          </div>
+        </div>
+
+        <!-- Metric 3: Active Targets -->
+        <div class="bg-obsidian-card border border-obsidian-border rounded-xl px-3.5 py-2.5 flex items-center justify-between shadow-inner-panel hover:border-purple-500/30 transition-all">
+          <div class="flex flex-col justify-between h-full">
+            <span class="text-[11px] uppercase font-mono tracking-wider text-gray-400 font-semibold block">Active Targets</span>
+            <div class="flex items-baseline gap-1.5 my-auto">
+              <span class="text-3xl lg:text-4xl font-bold font-mono text-white tracking-tight" id="val-active">0</span>
+              <span class="text-xs font-mono text-emerald-400 font-medium">BBoxes</span>
+            </div>
+            <span class="text-[9px] font-mono text-emerald-400/80 font-medium">In Viewport</span>
+          </div>
+          <div class="w-11 h-11 rounded-xl bg-purple-500/10 border border-purple-500/30 flex items-center justify-center text-purple-400 shrink-0">
+            <i class="fa-solid fa-bullseye text-sm"></i>
+          </div>
+        </div>
+
+        <!-- Metric 4: Total Tracked -->
+        <div class="bg-obsidian-card border border-obsidian-border rounded-xl px-3.5 py-2.5 flex items-center justify-between shadow-inner-panel hover:border-amber-500/30 transition-all">
+          <div class="flex flex-col justify-between h-full">
+            <span class="text-[11px] uppercase font-mono tracking-wider text-gray-400 font-semibold block">Total Tracked</span>
+            <div class="flex items-baseline gap-1.5 my-auto">
+              <span class="text-3xl lg:text-4xl font-bold font-mono text-white tracking-tight" id="val-total">0</span>
+              <span class="text-xs font-mono text-gray-400">Unique</span>
+            </div>
+            <span class="text-[9px] font-mono text-amber-400/80 font-medium">SORT Kalman</span>
+          </div>
+          <div class="w-11 h-11 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+            <i class="fa-solid fa-layer-group text-sm"></i>
+          </div>
+        </div>
+
+        <!-- Metric 5: Tripwire IN -->
+        <div class="bg-obsidian-card border border-obsidian-border rounded-xl px-3.5 py-2.5 flex items-center justify-between shadow-inner-panel hover:border-cyan-accent/40 transition-all">
+          <div class="flex flex-col justify-between h-full">
+            <span class="text-[11px] uppercase font-mono tracking-wider text-cyan-accent font-semibold block">Tripwire IN</span>
+            <div class="flex items-baseline gap-1.5 my-auto">
+              <span class="text-3xl lg:text-4xl font-bold font-mono text-cyan-accent tracking-tight" id="val-in">0</span>
+              <span class="text-xs font-mono text-gray-400">Objects</span>
+            </div>
+            <span class="text-[9px] font-mono text-cyan-accent/80 font-medium">Down Vector</span>
+          </div>
+          <div class="w-11 h-11 rounded-xl bg-cyan-muted border border-cyan-accent/40 flex items-center justify-center text-cyan-accent shrink-0">
+            <i class="fa-solid fa-arrow-down text-sm"></i>
+          </div>
+        </div>
+
+        <!-- Metric 6: Tripwire OUT -->
+        <div class="bg-obsidian-card border border-obsidian-border rounded-xl px-3.5 py-2.5 flex items-center justify-between shadow-inner-panel hover:border-lime/40 transition-all">
+          <div class="flex flex-col justify-between h-full">
+            <span class="text-[11px] uppercase font-mono tracking-wider text-lime font-semibold block">Tripwire OUT</span>
+            <div class="flex items-baseline gap-1.5 my-auto">
+              <span class="text-3xl lg:text-4xl font-bold font-mono text-lime tracking-tight" id="val-out">0</span>
+              <span class="text-xs font-mono text-gray-400">Objects</span>
+            </div>
+            <span class="text-[9px] font-mono text-lime/80 font-medium">Up Vector</span>
+          </div>
+          <div class="w-11 h-11 rounded-xl bg-lime-muted border border-lime/40 flex items-center justify-center text-lime shrink-0">
+            <i class="fa-solid fa-arrow-up text-sm"></i>
+          </div>
+        </div>
+      </section>
+      <!-- END: MetricsRibbon -->
+
+      <!-- BEGIN: Viewport & Right Sidebar -->
+      <main class="flex-1 flex overflow-hidden">
+        <!-- BEGIN: CentralSimulationViewport (FULL-AREA EDGE-TO-EDGE VIDEO PLAYER) -->
+        <section class="flex-1 flex flex-col bg-black min-w-0 relative overflow-hidden h-full" data-purpose="simulation-viewport">
+          <!-- Full Area Video Player Container (Edge-to-Edge) -->
+          <div id="video-player-frame" onmousemove="showInVideoControls()" onmouseleave="hideInVideoControls()" class="relative w-full h-full bg-black overflow-hidden flex items-center justify-center group select-none">
+            <!-- Real Video & Canvas Overlay -->
+            <video id="main-video" autoplay playsinline muted class="hidden pointer-events-none"></video>
+            <canvas id="main-canvas" onclick="handleCanvasClick(event)" class="w-full h-full cursor-pointer z-10 block"></canvas>
+
+            <!-- Floating Top Stream Info Overlay -->
+            <div id="in-video-header" class="absolute top-0 inset-x-0 bg-gradient-to-b from-black/85 via-black/40 to-transparent pt-3 pb-8 px-4 flex items-center justify-between z-20 pointer-events-none transition-opacity duration-300 opacity-100">
+              <div class="flex items-center gap-2 text-xs font-mono text-gray-300 drop-shadow">
+                <span class="w-2 h-2 rounded-full bg-lime animate-pulse"></span>
+                <span id="viewport-header-title" class="font-semibold text-white">Live Video Feed (Sample 1)</span>
+                <span id="viewport-resolution" class="text-[10px] text-gray-400 font-mono">[1280x720 @ 60Hz]</span>
+              </div>
+            </div>
+
+            <!-- Center Big Play/Pause Ripple Indicator -->
+            <div id="center-play-ripple" class="absolute pointer-events-none flex items-center justify-center w-20 h-20 rounded-full bg-black/70 border border-lime/50 text-lime text-3xl shadow-glow-lime opacity-0 scale-50 transition-all duration-300 z-30">
+              <i id="center-ripple-icon" class="fa-solid fa-play ml-1"></i>
+            </div>
+
+            <!-- INSIDE VIDEO CONTROLS OVERLAY (FLOATING AT BOTTOM OF VIDEO) -->
+            <div id="in-video-controls" onclick="event.stopPropagation()" class="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/95 via-black/70 to-transparent pt-8 pb-3 px-4 flex flex-col gap-2 z-20 transition-opacity duration-300 opacity-100">
+              
+              <!-- 1. Interactive Timeline Scrubber Bar -->
+              <div id="scrub-container" class="w-full flex items-center gap-3 group/scrub">
+                <div id="video-progress-bg" onclick="seekVideo(event)" class="flex-1 h-1.5 hover:h-2.5 bg-white/20 hover:bg-white/30 rounded-full overflow-hidden relative cursor-pointer transition-all border border-white/10">
+                  <div id="video-progress-bar" class="h-full bg-lime rounded-full transition-all duration-75 shadow-glow-lime" style="width: 0%;"></div>
+                </div>
+                <span id="video-duration-tag" class="text-[11px] font-mono text-gray-200 shrink-0 select-none font-bold drop-shadow">00:00 / 00:00</span>
+              </div>
+
+              <!-- 2. Player Controls Row -->
+              <div class="flex items-center justify-between">
+                <!-- Left Controls: Play/Pause, Next Clip, Volume, Timecode -->
+                <div class="flex items-center gap-2.5">
+                  <!-- Play/Pause Button -->
+                  <button id="btn-play" onclick="togglePlayPause()" title="Play / Pause Video (Space / P)" class="w-8 h-8 rounded-lg bg-lime hover:bg-lime-glow text-black font-bold flex items-center justify-center text-xs transition-all shadow-glow-lime hover:scale-105 active:scale-95">
+                    <i id="play-icon" class="fa-solid fa-pause"></i>
+                  </button>
+
+                  <!-- Next Sample Clip Button -->
+                  <button onclick="nextSamplePreset()" title="Next Preset Clip" class="w-8 h-8 rounded-lg bg-black/60 hover:bg-white/15 text-gray-300 hover:text-white border border-white/15 flex items-center justify-center text-xs transition-all">
+                    <i class="fa-solid fa-forward-step"></i>
+                  </button>
+
+                  <!-- Volume / Mute with Hover Slider -->
+                  <div class="flex items-center gap-1.5 group/vol">
+                    <button id="btn-volume" onclick="toggleMute()" title="Mute / Unmute (M)" class="w-8 h-8 rounded-lg bg-black/60 hover:bg-white/15 text-gray-300 hover:text-white border border-white/15 flex items-center justify-center text-xs transition-all">
+                      <i id="volume-icon" class="fa-solid fa-volume-high"></i>
+                    </button>
+                    <input id="volume-slider" type="range" min="0" max="1" step="0.05" value="1" oninput="setVolume(this.value)" class="w-14 h-1 accent-lime opacity-0 group-hover/vol:opacity-100 transition-opacity cursor-pointer" />
+                  </div>
+
+                  <!-- Timecode -->
+                  <div class="hidden sm:flex items-center gap-2 text-xs font-mono text-gray-300 font-medium drop-shadow">
+                    <span id="playback-time" class="text-lime font-bold">T+ 00:00:00.00</span>
+                    <span class="text-gray-500">•</span>
+                    <span id="playback-frame" class="text-gray-400">#0</span>
+                  </div>
+                </div>
+
+                <!-- Center: Playback Speed Selector -->
+                <div class="hidden md:flex items-center gap-1 bg-black/70 border border-white/15 rounded-lg p-0.5 text-xs font-mono shadow-inner">
+                  <button id="speed-05" onclick="setSpeed(0.5)" class="px-2 py-0.5 rounded text-gray-400 hover:text-white transition-all text-[11px]">0.5x</button>
+                  <button id="speed-10" onclick="setSpeed(1.0)" class="px-2 py-0.5 rounded bg-lime text-black font-bold shadow-glow-lime text-[11px]">1.0x</button>
+                  <button id="speed-15" onclick="setSpeed(1.5)" class="px-2 py-0.5 rounded text-gray-400 hover:text-white transition-all text-[11px]">1.5x</button>
+                  <button id="speed-20" onclick="setSpeed(2.0)" class="px-2 py-0.5 rounded text-gray-400 hover:text-white transition-all text-[11px]">2.0x</button>
+                </div>
+
+                <!-- Right Controls: Quality Badge, Snapshot, Record, Reset, Fullscreen -->
+                <div class="flex items-center gap-2">
+                  <button onclick="captureSnapshot()" title="Capture Frame (S)" class="w-8 h-8 rounded-lg bg-black/60 hover:bg-white/15 text-gray-300 hover:text-white border border-white/15 flex items-center justify-center text-xs transition-all">
+                    <i class="fa-solid fa-camera text-lime"></i>
+                  </button>
+
+                  <button id="btn-record" onclick="toggleRecording()" title="Record Tracked Video" class="w-8 h-8 rounded-lg bg-black/60 hover:bg-white/15 text-gray-300 hover:text-white border border-white/15 flex items-center justify-center text-xs transition-all">
+                    <i id="record-icon" class="fa-solid fa-circle text-[10px] text-red-500"></i>
+                  </button>
+
+                  <button onclick="resetTracking()" title="Reset Tracker (R)" class="w-8 h-8 rounded-lg bg-black/60 hover:bg-white/15 text-gray-400 hover:text-red-400 border border-white/15 flex items-center justify-center text-xs transition-all">
+                    <i class="fa-solid fa-rotate-right"></i>
+                  </button>
+
+                  <button onclick="toggleFullscreen()" title="Fullscreen (F)" class="w-8 h-8 rounded-lg bg-black/60 hover:bg-white/15 text-gray-300 hover:text-lime border border-white/15 flex items-center justify-center text-xs transition-all">
+                    <i class="fa-solid fa-expand"></i>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+        <!-- END: CentralSimulationViewport -->
+
+        <!-- BEGIN: RightSidebar - Analytics & Telemetry -->
+        <aside class="w-96 bg-obsidian-surface border-l border-obsidian-border flex flex-col justify-between shrink-0 overflow-hidden" style="width: 24rem;" data-purpose="telemetry-sidebar">
+          <!-- Top Area: Detected Classes Breakdown -->
+          <div class="p-3.5 space-y-3 flex-1 overflow-y-auto">
+            <div class="flex justify-between items-center">
+              <label class="text-[10px] font-mono uppercase tracking-wider text-gray-400 font-semibold block">Detected Classes Breakdown</label>
+              <span id="active-class-count-tag" class="text-[10px] font-mono text-lime font-medium">0 active</span>
+            </div>
+
+            <div id="class-distribution-list" class="space-y-2.5">
+              <div class="text-[11px] font-mono text-gray-500 py-2">No active targets in view</div>
+            </div>
+          </div>
+
+          <!-- Bottom Sticky Area: Track Activity Log + Export -->
+          <div class="border-t border-obsidian-border bg-obsidian-surface shrink-0 mt-auto">
+            <!-- Track Activity Log Terminal (Compact & Stuck to Bottom) -->
+            <div class="p-3.5 pb-2 flex flex-col">
+              <div class="flex items-center justify-between mb-1.5">
+                <label class="text-[10px] font-mono uppercase tracking-wider text-gray-400 font-semibold block">Track Activity Log</label>
+                <button onclick="clearLogs()" class="text-[10px] font-mono text-red-400 hover:text-red-300 transition-colors uppercase font-bold">Clear</button>
+              </div>
+              <!-- Compact Console Feed Box -->
+              <div id="activity-feed" class="bg-obsidian-base rounded-lg border border-obsidian-border p-2.5 font-mono text-[11px] space-y-2 h-44 overflow-y-auto" data-purpose="terminal-activity-feed">
+                <div class="border-l-2 border-lime pl-2 leading-relaxed">
+                  <span class="text-gray-500">18:00:00</span>
+                  <span class="text-lime font-bold ml-1">SYSTEM</span>
+                  <span class="text-gray-300 block">VisionGrid Initialized</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Export Telemetry Actions -->
+            <div class="p-3.5 pt-1.5 space-y-1.5">
+              <label class="text-[10px] font-mono uppercase tracking-wider text-gray-400 block">Export Telemetry Data</label>
+              <div class="grid grid-cols-2 gap-2 font-mono text-xs">
+                <button onclick="exportData('json')" class="py-1.5 px-3 rounded-lg bg-obsidian-card border border-obsidian-border hover:border-lime/40 text-gray-200 hover:text-lime flex items-center justify-center gap-1.5 transition-all">
+                  <i class="fa-solid fa-code text-[11px] text-lime"></i>
+                  <span>JSON</span>
+                </button>
+                <button onclick="exportData('csv')" class="py-1.5 px-3 rounded-lg bg-obsidian-card border border-obsidian-border hover:border-lime/40 text-gray-200 hover:text-lime flex items-center justify-center gap-1.5 transition-all">
+                  <i class="fa-solid fa-file-csv text-[11px] text-lime"></i>
+                  <span>CSV</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </aside>
+        <!-- END: RightSidebar -->
+      </main>
+      <!-- END: Viewport & Right Sidebar -->
+    </div>
+    <!-- END: Main Stage & Right Panel -->
+  </div>
+  <!-- END: Master Horizontal Layout -->
+
+  <!-- Scripts -->
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100%" height="100%">
+  <defs>
+    <!-- Gradients -->
+    <linearGradient id="v-cyan-blue" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8" />
+      <stop offset="50%" stop-color="#00f0ff" />
+      <stop offset="100%" stop-color="#0284c7" />
+    </linearGradient>
+    <linearGradient id="v-left-wing" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#67e8f9" />
+      <stop offset="100%" stop-color="#0369a1" />
+    </linearGradient>
+    <linearGradient id="v-right-wing" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0284c7" />
+      <stop offset="100%" stop-color="#082f49" />
+    </linearGradient>
+    <linearGradient id="v-accent-glow" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#a3e635" />
+      <stop offset="100%" stop-color="#00f0ff" />
+    </linearGradient>
+    
+    <!-- Neon Glow Filter -->
+    <filter id="v-neon-glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="4" result="blur" />
+      <feMerge>
+        <feMergeNode in="blur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Ambient Glow Backing -->
+  <path d="M 16 16 L 38 16 L 50 64 L 62 16 L 84 16 L 56 86 L 44 86 Z" fill="#00f0ff" opacity="0.45" filter="url(#v-neon-glow)" />
+
+  <!-- Main Left Wing (Chiseled Neon Cyan) -->
+  <polygon points="18,18 40,18 50,68 38,84 18,18" fill="url(#v-left-wing)" />
+
+  <!-- Main Right Wing (Faceted Depth) -->
+  <polygon points="82,18 60,18 50,68 62,84 82,18" fill="url(#v-right-wing)" />
+
+  <!-- Central Vertex Joint (Lime & Cyan Accent) -->
+  <polygon points="38,84 50,70 62,84 50,88" fill="url(#v-accent-glow)" />
+
+  <!-- Specular Top Rim Highlights -->
+  <path d="M 18 18 L 40 18 L 50 68 L 46 72 L 24 22 Z" fill="#ffffff" opacity="0.85" />
+  <path d="M 82 18 L 60 18 L 50 68 L 54 72 L 76 22 Z" fill="#ffffff" opacity="0.45" />
+
+  <!-- High-Tech Center Energy Core Dot -->
+  <circle cx="50" cy="46" r="3" fill="#a3e635" filter="url(#v-neon-glow)" />
+</svg>
