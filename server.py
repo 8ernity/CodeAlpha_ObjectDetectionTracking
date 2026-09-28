@@ -41,7 +41,7 @@ os.makedirs(SAMPLE_DIR, exist_ok=True)
 class PipelineState:
     def __init__(self):
         self.detector = ObjectDetector(model_name="yolov8n.pt", conf_thresh=0.45, iou_thresh=0.45)
-        self.tracker = Sort(max_age=30, min_hits=2, iou_threshold=0.35)
+        self.tracker = Sort(max_age=30, min_hits=1, iou_threshold=0.35)
 
 state = PipelineState()
 
@@ -157,6 +157,16 @@ async def websocket_stream(websocket: WebSocket):
                     "tracks": track_results,
                     "active_count": len(track_results),
                     "total_tracks": state.tracker.total_tracks_count
+                }
+                await websocket.send_text(json.dumps(response))
+
+            elif action == "reset":
+                state.tracker.reset()
+                response = {
+                    "type": "reset_ack",
+                    "total_tracks": 0,
+                    "active_count": 0,
+                    "tracks": []
                 }
                 await websocket.send_text(json.dumps(response))
 

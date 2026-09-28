@@ -825,7 +825,7 @@
           <!-- Full Area Video Player Container (Edge-to-Edge) -->
           <div id="video-player-frame" onmousemove="showInVideoControls()" onmouseleave="hideInVideoControls()" class="relative w-full h-full bg-black overflow-hidden flex items-center justify-center group select-none">
             <!-- Real Video & Canvas Overlay -->
-            <video id="main-video" autoplay playsinline muted class="hidden pointer-events-none"></video>
+            <video id="main-video" autoplay playsinline muted class="absolute opacity-0 pointer-events-none w-px h-px -z-10"></video>
             <canvas id="main-canvas" onclick="handleCanvasClick(event)" class="w-full h-full cursor-pointer z-10 block"></canvas>
 
             <!-- Floating Top Stream Info Overlay -->

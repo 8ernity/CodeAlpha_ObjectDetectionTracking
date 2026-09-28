@@ -1,7 +1,7 @@
 """
 YOLOv8 and Pre-trained Deep Learning Object Detector Module
-High-precision detection with Cross-Class NMS, False-Positive Noise Rejection,
-and fast 416px CPU tensor acceleration.
+High-precision detection with Hierarchical Nested Box Suppression (IoMin),
+Cross-Class NMS, and fast 416px tensor acceleration.
 """
 
 import time
@@ -24,17 +24,18 @@ COCO_CLASSES = [
     'book', 'clock', 'vase', 'scissors', 'teddy bear', 'hair drier', 'toothbrush'
 ]
 
-# High-priority surveillance / street entities (suppresses noise like skis, surfboards on roads)
 SURVEILLANCE_CLASSES = {
     'person', 'car', 'truck', 'bus', 'motorcycle', 'bicycle', 'dog', 'cat',
     'bird', 'horse', 'backpack', 'handbag', 'suitcase', 'cell phone', 'laptop', 'bench'
 }
 
 
-def nms_cross_class(boxes, scores, class_ids, iou_thresh=0.45):
+def nms_hierarchical(boxes, scores, class_ids, iou_thresh=0.50, same_class_containment=0.80):
     """
-    Suppresses redundant overlapping bounding boxes across classes
-    (e.g., prevents a white van from simultaneously registering as Car + Motorcycle + Bicycle).
+    Hierarchical suppression:
+    1. Suppresses duplicate detections of the same class with IoU > 0.50.
+    2. Suppresses nested sub-boxes of the SAME class (e.g. limbs/torso detected as separate 'person' inside a body) with containment > 0.80.
+    3. For different classes, only suppresses if bounding boxes are practically identical (IoU > 0.85).
     """
     if len(boxes) == 0:
         return []
@@ -51,33 +52,44 @@ def nms_cross_class(boxes, scores, class_ids, iou_thresh=0.45):
         i = order[0]
         keep.append(i)
         
-        xx1 = np.maximum(x1[i], x1[order[1:]])
-        yy1 = np.maximum(y1[i], y1[order[1:]])
-        xx2 = np.minimum(x2[i], x2[order[1:]])
-        yy2 = np.minimum(y2[i], y2[order[1:]])
+        if order.size == 1:
+            break
+            
+        rest = order[1:]
+        
+        xx1 = np.maximum(x1[i], x1[rest])
+        yy1 = np.maximum(y1[i], y1[rest])
+        xx2 = np.minimum(x2[i], x2[rest])
+        yy2 = np.minimum(y2[i], y2[rest])
         
         w = np.maximum(0.0, xx2 - xx1)
         h = np.maximum(0.0, yy2 - yy1)
         inter = w * h
         
         area_i = areas[i]
-        area_others = areas[order[1:]]
+        area_rest = areas[rest]
+        union = area_i + area_rest - inter
+        iou = inter / (union + 1e-6)
         
-        # Standard IoU
-        iou = inter / (area_i + area_others - inter + 1e-6)
+        min_area = np.minimum(area_i, area_rest)
+        containment = inter / (min_area + 1e-6)
         
-        # Containment ratio (if a smaller box is > 70% contained inside a larger box of lower score)
-        containment = inter / (np.minimum(area_i, area_others) + 1e-6)
+        same_cls = (class_ids[rest] == class_ids[i])
         
-        # Suppress if standard IoU is high OR containment is high with different conflicting class
-        suppress_mask = (iou <= iou_thresh) & (containment < 0.65)
-        order = order[1:][suppress_mask]
+        # Same class: suppress if IoU > iou_thresh OR containment > 0.80
+        suppress_same = same_cls & ((iou > iou_thresh) | (containment > same_class_containment))
+        
+        # Different class: suppress only if near identical bounding boxes
+        suppress_diff = (~same_cls) & (iou > 0.85)
+        
+        suppress_mask = ~(suppress_same | suppress_diff)
+        order = rest[suppress_mask]
 
     return keep
 
 
 class ObjectDetector:
-    def __init__(self, model_name='yolov8n.pt', conf_thresh=0.45, iou_thresh=0.45, allowed_classes=None):
+    def __init__(self, model_name='yolov8n.pt', conf_thresh=0.40, iou_thresh=0.45, allowed_classes=None):
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         print(f"[Detector] Initializing YOLOv8 model '{model_name}' on device: {self.device}...")
         self.model = YOLO(model_name)
@@ -132,13 +144,10 @@ class ObjectDetector:
 
     def detect(self, frame):
         """
-        Runs object detection on a single BGR OpenCV image frame.
-        Uses 416px fast image size for ~3x speedup on CPU.
+        Runs object detection on a single BGR OpenCV image frame with 416px fast inference.
         """
         t0 = time.perf_counter()
-        h_orig, w_orig = frame.shape[:2]
         
-        # Inference with 416px size for 35ms lightning latency on CPU
         results = self.model.predict(
             source=frame,
             conf=self.conf_thresh,
@@ -149,10 +158,9 @@ class ObjectDetector:
         )
         latency_ms = (time.perf_counter() - t0) * 1000.0
 
-        detections = []
+        boxes_list = []
         scores_list = []
         class_ids_list = []
-        boxes_list = []
 
         if len(results) > 0 and results[0].boxes is not None:
             boxes = results[0].boxes
@@ -163,17 +171,12 @@ class ObjectDetector:
 
                 cls_name = self.class_names.get(cls_id, str(cls_id)).lower()
 
-                # Filter out obvious false positive noise (e.g. skis on sidewalk, frisbee in trees)
-                if not self.allowed_classes and cls_name not in SURVEILLANCE_CLASSES and score < 0.65:
-                    continue
-
-                # Min bounding box area check (filters tiny 4px noise blips)
+                # Min bounding box dimensions check
                 bw = xyxy[2] - xyxy[0]
                 bh = xyxy[3] - xyxy[1]
-                if bw < 14 or bh < 14:
+                if bw < 12 or bh < 12:
                     continue
 
-                # Refine animal detection (cat vs dog accuracy)
                 cls_id, score = self._refine_animal(frame, xyxy, cls_id, score)
 
                 if self.allowed_classes and (cls_name not in self.allowed_classes and str(cls_id) not in self.allowed_classes):
@@ -184,14 +187,15 @@ class ObjectDetector:
                 class_ids_list.append(cls_id)
 
         detected_classes = {}
+        detections = []
 
-        # Apply Cross-Class Non-Maximum Suppression to remove duplicates
+        # Apply Hierarchical Nested Box & Cross-Class NMS
         if len(boxes_list) > 0:
             raw_boxes = np.array(boxes_list, dtype=np.float32)
             raw_scores = np.array(scores_list, dtype=np.float32)
             raw_classes = np.array(class_ids_list, dtype=np.int32)
             
-            keep_indices = nms_cross_class(raw_boxes, raw_scores, raw_classes, iou_thresh=0.4)
+            keep_indices = nms_hierarchical(raw_boxes, raw_scores, raw_classes, iou_thresh=0.50, same_class_containment=0.80)
             
             for idx in keep_indices:
                 b = raw_boxes[idx]

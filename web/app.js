@@ -1,6 +1,6 @@
 /**
- * VisionGrid - High-Performance Object Detection & SORT Tracking
- * Hybrid Engine: Decoupled 60 FPS WebGL GPU AI + High-Precision Python YOLOv8
+ * VisionGrid - High-Performance Object Detection & Multi-Target SORT Tracking
+ * Hybrid Engine: Decoupled 60.0 FPS Canvas Render Loop + WebGL GPU AI / Python YOLOv8
  */
 
 // ==========================================
@@ -32,7 +32,7 @@ class KalmanBoxTracker {
     this.vy = 0;
   }
 
-  // Predict state for next frame (60 FPS smooth trajectory interpolation)
+  // Predict state for next animation frame (60 FPS smooth trajectory)
   predict() {
     this.cx += this.vx;
     this.cy += this.vy;
@@ -46,7 +46,7 @@ class KalmanBoxTracker {
     return [x1, y1, x2, y2];
   }
 
-  // Update state with newly observed AI detection
+  // Update state with newly observed detection
   update(bbox, score, className) {
     this.timeSinceUpdate = 0;
     this.hits += 1;
@@ -81,7 +81,7 @@ class KalmanBoxTracker {
 }
 
 class WebSortTracker {
-  constructor(maxAge = 40, minHits = 2, iouThreshold = 0.3) {
+  constructor(maxAge = 35, minHits = 1, iouThreshold = 0.30) {
     this.maxAge = maxAge;
     this.minHits = minHits;
     this.iouThreshold = iouThreshold;
@@ -142,7 +142,7 @@ class WebSortTracker {
       }
     }
 
-    // Update matched
+    // Update matched trackers
     for (const [d, t] of matches) {
       this.trackers[t].update(detections[d].bbox, detections[d].score, detections[d].className);
     }
@@ -162,7 +162,7 @@ class WebSortTracker {
 
   getActiveTracks() {
     return this.trackers
-      .filter(t => t.timeSinceUpdate <= this.maxAge && (t.hits >= this.minHits || t.age <= 1))
+      .filter(t => t.timeSinceUpdate <= this.maxAge && t.hits >= this.minHits)
       .map(t => ({
         id: t.id,
         className: t.className,
@@ -175,7 +175,7 @@ class WebSortTracker {
   }
 }
 
-const webTracker = new WebSortTracker(40, 2, 0.3);
+const webTracker = new WebSortTracker(35, 1, 0.30);
 
 // ==========================================
 // 2. Global State & App Setup
@@ -188,7 +188,7 @@ const state = {
   recordedChunks: [],
   ws: null,
   isPythonActive: false,
-  confThresh: 0.45,
+  confThresh: 0.40,
   maxAge: 25,
   linePos: 0.5,
   countIn: 0,
@@ -202,11 +202,11 @@ const state = {
     line: false
   },
   activeTracks: [],
-  rawTracks: [],
+  pythonTracks: [],
   trackHistories: {},
   totalTracks: 0,
-  fps: 0,
-  latency: 0,
+  fps: 60.0,
+  latency: 15.0,
   fpsList: [],
   lastFrameTime: performance.now(),
   startTime: performance.now(),
@@ -221,7 +221,7 @@ const ctx = canvasEl.getContext('2d');
 const classDistEl = document.getElementById('class-distribution-list');
 const activityFeedEl = document.getElementById('activity-feed');
 
-// Offscreen AI tensor canvas (Decoupled 416px for lightning ~15ms inference)
+// Offscreen AI tensor canvas (Decoupled 416px for lightning GPU inference)
 const aiCanvas = document.createElement('canvas');
 aiCanvas.width = 416;
 aiCanvas.height = 234;
@@ -229,13 +229,13 @@ const aiCtx = aiCanvas.getContext('2d', { willReadFrequently: true });
 let isAiDetecting = false;
 let webModel = null;
 
-// Offscreen canvas for Python streaming if available
+// Offscreen canvas for Python streaming
 const offscreenCanvas = document.createElement('canvas');
 offscreenCanvas.width = 416;
 offscreenCanvas.height = 234;
 const offscreenCtx = offscreenCanvas.getContext('2d', { willReadFrequently: true });
 let isWsProcessing = false;
-let lastWsSendTime = 0;
+let pythonStreamInterval = null;
 
 // Class Categories Mapping for Top Filters
 const CLASS_CATEGORIES = {
@@ -375,7 +375,7 @@ async function initWebAI() {
     if (typeof cocoSsd !== 'undefined') {
       webModel = await cocoSsd.load({ base: 'mobilenet_v2' });
       if (!state.isPythonActive) {
-        setBackendStatus('webai', 'Browser AI (WebGL GPU · 60 FPS)');
+        setBackendStatus('webai', 'Browser AI (WebGL GPU • 60 FPS)');
       }
       addActivityLog('ENGINE', 'Initialized Browser WebGL AI (60 FPS Decoupled)', 'lime');
       startDecoupledAiLoop();
@@ -392,15 +392,73 @@ async function initWebAI() {
       if (typeof cocoSsd !== 'undefined') {
         webModel = await cocoSsd.load();
         if (!state.isPythonActive) {
-          setBackendStatus('webai', 'Browser AI (CPU Fallback · 60 FPS)');
+          setBackendStatus('webai', 'Browser AI (CPU Fallback • 60 FPS)');
         }
         addActivityLog('ENGINE', 'Initialized Browser Web AI (CPU Fallback)', 'cyan');
         startDecoupledAiLoop();
       }
     } catch (err) {
-      console.error('All Web AI initialization failed:', err);
+      console.error('Web AI Load Error:', err);
     }
   }
+}
+
+// Hierarchical Nested Box Suppression:
+// Suppresses duplicate limb/sub-part boxes of the SAME class (containment > 0.80) while preserving distinct objects.
+function suppressNestedDetections(detections, sameClassContainment = 0.80, iouThresh = 0.50) {
+  if (!detections || detections.length <= 1) return detections || [];
+  
+  const sorted = [...detections].sort((a, b) => (b.score || 0) - (a.score || 0));
+  const keep = [];
+  
+  for (let i = 0; i < sorted.length; i++) {
+    const dA = sorted[i];
+    const [ax1, ay1, ax2, ay2] = dA.bbox;
+    const areaA = Math.max(1, (ax2 - ax1) * (ay2 - ay1));
+    let shouldSuppress = false;
+    
+    for (let j = 0; j < keep.length; j++) {
+      const dB = keep[j];
+      const [bx1, by1, bx2, by2] = dB.bbox;
+      const areaB = Math.max(1, (bx2 - bx1) * (by2 - by1));
+      
+      const ix1 = Math.max(ax1, bx1);
+      const iy1 = Math.max(ay1, by1);
+      const ix2 = Math.min(ax2, bx2);
+      const iy2 = Math.min(ay2, by2);
+      
+      const iw = Math.max(0, ix2 - ix1);
+      const ih = Math.max(0, iy2 - iy1);
+      const inter = iw * ih;
+      
+      if (inter > 0) {
+        const union = areaA + areaB - inter;
+        const iou = inter / union;
+        const containment = inter / Math.min(areaA, areaB);
+        
+        const isSameClass = (dA.className === dB.className);
+        
+        if (isSameClass) {
+          // Suppress same-class sub-box or heavy overlap
+          if (iou > iouThresh || containment > sameClassContainment) {
+            shouldSuppress = true;
+            break;
+          }
+        } else {
+          // Different classes: only suppress if bounding boxes are practically identical
+          if (iou > 0.85) {
+            shouldSuppress = true;
+            break;
+          }
+        }
+      }
+    }
+    
+    if (!shouldSuppress) {
+      keep.push(dA);
+    }
+  }
+  return keep;
 }
 
 function startDecoupledAiLoop() {
@@ -429,7 +487,7 @@ function startDecoupledAiLoop() {
 
         const rawDets = await webModel.detect(aiCanvas, 20, state.confThresh);
         const latency = Math.max(1, performance.now() - t0);
-        state.latency = latency;
+        state.latency = Math.round(latency);
 
         const formattedDets = (rawDets || []).map(d => ({
           bbox: [d.bbox[0], d.bbox[1], d.bbox[0] + d.bbox[2], d.bbox[1] + d.bbox[3]],
@@ -437,8 +495,9 @@ function startDecoupledAiLoop() {
           className: d.class
         }));
 
-        // Pass detections to JavaScript Kalman Tracker
-        webTracker.update(formattedDets);
+        // Pass clean detections to JavaScript Kalman Tracker
+        const cleanDets = suppressNestedDetections(formattedDets);
+        webTracker.update(cleanDets);
       }
     } catch (e) {
       console.warn('Decoupled AI detection cycle error:', e);
@@ -446,12 +505,12 @@ function startDecoupledAiLoop() {
       isAiDetecting = false;
     }
     // Independent background scheduling (does NOT block 60 FPS video render)
-    setTimeout(aiWorker, 20);
+    setTimeout(aiWorker, 30);
   }
   aiWorker();
 }
 
-// Convert WebSORT Tracker state to Canvas Viewport Coordinates
+// Convert WebSORT Tracker state to Viewport Active Tracks
 function syncWebTracksToState(vRect, fw, fh) {
   const tracks = webTracker.getActiveTracks();
   const lineY = vRect.y + vRect.h * state.linePos;
@@ -472,7 +531,7 @@ function syncWebTracksToState(vRect, fw, fh) {
 
     // Tripwire Crossing Check
     if (state.toggles.line && !state.crossedIds[t.id]) {
-      if (Math.abs(centerY - lineY) < 20) {
+      if (Math.abs(centerY - lineY) < 24) {
         state.crossedIds[t.id] = true;
         if (vy < 0) {
           state.countOut += 1;
@@ -512,6 +571,7 @@ function tryConnectPythonWs() {
       state.isPythonActive = true;
       setBackendStatus('python', 'Python Backend (YOLOv8 + SORT)');
       addActivityLog('ENGINE', 'Connected to Python Backend (YOLOv8 + SORT)', 'lime');
+      startPythonStreamingWorker();
     };
     ws.onmessage = (event) => {
       isWsProcessing = false;
@@ -520,49 +580,17 @@ function tryConnectPythonWs() {
         if (data.meta && data.meta.latency_ms) state.latency = data.meta.latency_ms;
         if (data.total_tracks !== undefined) state.totalTracks = data.total_tracks;
         if (data.tracks) {
-          const fw = data.frame_w || 640;
-          const fh = data.frame_h || 360;
-          const rect = canvasEl.getBoundingClientRect();
-          const vRect = getVideoDrawRect(rect.width, rect.height);
-          const lineY = vRect.y + vRect.h * state.linePos;
-
-          state.activeTracks = data.tracks.map(t => {
-            const x1 = vRect.x + (t.bbox[0] / fw) * vRect.w;
-            const y1 = vRect.y + (t.bbox[1] / fh) * vRect.h;
-            const x2 = vRect.x + (t.bbox[2] / fw) * vRect.w;
-            const y2 = vRect.y + (t.bbox[3] / fh) * vRect.h;
-            const centerY = (y1 + y2) / 2;
-
-            if (state.toggles.line && !state.crossedIds[t.id]) {
-              if (Math.abs(centerY - lineY) < 20) {
-                state.crossedIds[t.id] = true;
-                if (t.vy < 0) {
-                  state.countOut += 1;
-                  addActivityLog(`ID #${t.id}`, `Crossed Tripwire UP [OUT]`, 'lime');
-                } else {
-                  state.countIn += 1;
-                  addActivityLog(`ID #${t.id}`, `Crossed Tripwire DOWN [IN]`, 'cyan');
-                }
-              }
-            }
-
-            return {
-              id: t.id,
-              className: t.class_name || 'object',
-              score: t.score,
-              bbox: [x1, y1, x2, y2],
-              speed: Math.round(Math.hypot(t.vx, t.vy) * 2.2) || 5,
-              vx: t.vx,
-              vy: t.vy
-            };
-          });
+          state.pythonTracks = data.tracks;
+          state.pythonFrameW = data.frame_w || 416;
+          state.pythonFrameH = data.frame_h || 234;
         }
       } catch (e) {}
     };
     ws.onclose = () => {
       state.isPythonActive = false;
       state.ws = null;
-      if (webModel) setBackendStatus('webai', 'Browser AI (WebGL GPU · 60 FPS)');
+      if (pythonStreamInterval) clearInterval(pythonStreamInterval);
+      if (webModel) setBackendStatus('webai', 'Browser AI (WebGL GPU • 60 FPS)');
     };
     ws.onerror = () => {
       state.isPythonActive = false;
@@ -572,31 +600,82 @@ function tryConnectPythonWs() {
   }
 }
 
-// Fast Decoupled Frame Encoding to Python Backend
-function sendFrameToPython() {
-  if (!state.ws || state.ws.readyState !== WebSocket.OPEN || isWsProcessing || state.isPaused) return;
-  const now = performance.now();
-  if (now - lastWsSendTime < 65) return; // Throttle to prevent WebSocket buffer congestion
-  lastWsSendTime = now;
+// Independent background worker for Python frame encoding (does NOT block 60 FPS render loop)
+function startPythonStreamingWorker() {
+  if (pythonStreamInterval) clearInterval(pythonStreamInterval);
+  pythonStreamInterval = setInterval(() => {
+    if (!state.ws || state.ws.readyState !== WebSocket.OPEN || isWsProcessing || state.isPaused) return;
+    const isVideoReady = videoEl && (videoEl.readyState >= 2 || videoEl.videoWidth > 0);
+    if (!isVideoReady) return;
 
-  const vw = videoEl.videoWidth || 640;
-  const vh = videoEl.videoHeight || 360;
-  const sendW = 416;
-  const sendH = Math.max(1, Math.round(sendW * (vh / vw)));
+    const vw = videoEl.videoWidth || 640;
+    const vh = videoEl.videoHeight || 360;
+    const sendW = 416;
+    const sendH = Math.max(1, Math.round(sendW * (vh / vw)));
 
-  if (offscreenCanvas.width !== sendW || offscreenCanvas.height !== sendH) {
-    offscreenCanvas.width = sendW;
-    offscreenCanvas.height = sendH;
-  }
+    if (offscreenCanvas.width !== sendW || offscreenCanvas.height !== sendH) {
+      offscreenCanvas.width = sendW;
+      offscreenCanvas.height = sendH;
+    }
 
-  offscreenCtx.drawImage(videoEl, 0, 0, sendW, sendH);
-  const dataUrl = offscreenCanvas.toDataURL('image/jpeg', 0.55);
-  isWsProcessing = true;
-  state.ws.send(JSON.stringify({ action: 'process_frame', image: dataUrl }));
+    offscreenCtx.drawImage(videoEl, 0, 0, sendW, sendH);
+    const dataUrl = offscreenCanvas.toDataURL('image/jpeg', 0.60);
+    isWsProcessing = true;
+    state.ws.send(JSON.stringify({ action: 'process_frame', image: dataUrl }));
+  }, 65); // ~15 FPS background inference stream
+}
+
+// Sync Python Tracks to Viewport Canvas
+function syncPythonTracksToState(vRect) {
+  const fw = state.pythonFrameW || 416;
+  const fh = state.pythonFrameH || 234;
+  const lineY = vRect.y + vRect.h * state.linePos;
+
+  state.activeTracks = (state.pythonTracks || []).map(t => {
+    const x1 = vRect.x + (t.bbox[0] / fw) * vRect.w;
+    const y1 = vRect.y + (t.bbox[1] / fh) * vRect.h;
+    const x2 = vRect.x + (t.bbox[2] / fw) * vRect.w;
+    const y2 = vRect.y + (t.bbox[3] / fh) * vRect.h;
+    const centerY = (y1 + y2) / 2;
+
+    const scaleX = vRect.w / fw;
+    const scaleY = vRect.h / fh;
+    const vx = (t.vx || 0) * scaleX;
+    const vy = (t.vy || 0) * scaleY;
+    const speed = Math.round(Math.hypot(vx, vy) * 2.2) || 5;
+
+    // Tripwire Crossing Check
+    if (state.toggles.line && !state.crossedIds[t.id]) {
+      if (Math.abs(centerY - lineY) < 24) {
+        state.crossedIds[t.id] = true;
+        if (vy < 0) {
+          state.countOut += 1;
+          addActivityLog(`ID #${t.id}`, `Crossed Tripwire UP [OUT]`, 'lime');
+        } else {
+          state.countIn += 1;
+          addActivityLog(`ID #${t.id}`, `Crossed Tripwire DOWN [IN]`, 'cyan');
+        }
+      }
+    }
+
+    if (!state.trackHistories[t.id]) {
+      state.trackHistories[t.id] = true;
+    }
+
+    return {
+      id: t.id,
+      className: t.class_name || 'object',
+      score: t.score,
+      bbox: [x1, y1, x2, y2],
+      speed: speed,
+      vx: vx,
+      vy: vy
+    };
+  });
 }
 
 // ==========================================
-// 5. App Initialization & Render Loop
+// 5. App Initialization & 60 FPS Render Loop
 // ==========================================
 async function initApp() {
   initTheme();
@@ -668,7 +747,7 @@ function processLoop() {
     }
 
     if (state.isPythonActive) {
-      sendFrameToPython();
+      syncPythonTracksToState(vRect);
     } else {
       // 60 FPS Kalman Prediction Step (Glides boxes seamlessly across frames)
       webTracker.predictAll();
@@ -690,7 +769,7 @@ function renderOverlays(cw, ch, vRect) {
   // 1. Tripwire Counting Line
   if (state.toggles.line) {
     ctx.save();
-    ctx.strokeStyle = 'rgba(34, 211, 238, 0.55)';
+    ctx.strokeStyle = 'rgba(34, 211, 238, 0.65)';
     ctx.lineWidth = 2;
     ctx.setLineDash([8, 6]);
     ctx.beginPath();
@@ -729,7 +808,7 @@ function renderOverlays(cw, ch, vRect) {
     // Bounding Box Rectangle & Corner Reticles
     if (state.toggles.boxes) {
       ctx.save();
-      ctx.fillStyle = theme.border + '12';
+      ctx.fillStyle = theme.border + '14';
       ctx.fillRect(x1, y1, w, h);
 
       ctx.strokeStyle = theme.border;
@@ -750,73 +829,83 @@ function renderOverlays(cw, ch, vRect) {
       ctx.lineTo(x1 + reticleLen, y1 - 2);
       ctx.stroke();
 
+      // Top-Right L
+      ctx.beginPath();
+      ctx.moveTo(x2 + 2 - reticleLen, y1 - 2);
+      ctx.lineTo(x2 + 2, y1 - 2);
+      ctx.lineTo(x2 + 2, y1 + reticleLen);
+      ctx.stroke();
+
+      // Bottom-Left L
+      ctx.beginPath();
+      ctx.moveTo(x1 - 2, y2 + 2 - reticleLen);
+      ctx.lineTo(x1 - 2, y2 + 2);
+      ctx.lineTo(x1 + reticleLen, y2 + 2);
+      ctx.stroke();
+
       // Bottom-Right L
       ctx.beginPath();
-      ctx.moveTo(x2 + 2, y2 - reticleLen);
+      ctx.moveTo(x2 + 2 - reticleLen, y2 + 2);
       ctx.lineTo(x2 + 2, y2 + 2);
-      ctx.lineTo(x2 - reticleLen, y2 + 2);
+      ctx.lineTo(x2 + 2, y2 + 2 - reticleLen);
       ctx.stroke();
 
       ctx.restore();
     }
 
-    // Top Label / ID Badge
-    const showLabel = state.toggles.labels;
-    const showId = state.toggles.ids;
-
-    if (showLabel || showId) {
+    // Top Header Badge: Class Name + Confidence %
+    if (state.toggles.labels) {
       ctx.save();
-      let labelText = '';
-      if (showId && showLabel) {
-        labelText = `ID #${track.id} · ${track.className.toUpperCase()} ${Math.round(track.score * 100)}%`;
-      } else if (showId) {
-        labelText = `ID #${track.id}`;
-      } else if (showLabel) {
-        labelText = `${track.className.toUpperCase()} ${Math.round(track.score * 100)}%`;
-      }
+      const scorePct = Math.round((track.score || 0.85) * 100);
+      const labelText = `${(track.className || 'object').toUpperCase()} ${scorePct}%`;
 
       ctx.font = '700 11px "JetBrains Mono", monospace';
-      const lw = ctx.measureText(labelText).width;
-
-      let badgeX = Math.max(vRect.x + 4, Math.min(x1, vRect.x + vRect.w - lw - 28));
-      let badgeY = y1 - 22;
-      
-      if (badgeY < vRect.y + 2) {
-        badgeY = Math.min(y1 + 4, vRect.y + vRect.h - 24);
-      }
+      const tw = ctx.measureText(labelText).width;
+      const tagW = tw + 14;
+      const tagH = 20;
+      const tagX = Math.max(vRect.x, Math.min(x1, vRect.x + vRect.w - tagW));
+      const tagY = y1 - tagH - 4 >= vRect.y ? y1 - tagH - 4 : y1 + 4;
 
       ctx.fillStyle = theme.bg;
       ctx.strokeStyle = theme.border;
       ctx.lineWidth = 1;
-      roundRect(ctx, badgeX, badgeY, lw + 24, 20, 4, true, true);
+      roundRect(ctx, tagX, tagY, tagW, tagH, 3, true, true);
 
-      // Entity dot
-      ctx.fillStyle = theme.text;
-      ctx.beginPath();
-      ctx.arc(badgeX + 9, badgeY + 10, 3, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Badge Text
       ctx.fillStyle = theme.text;
       ctx.shadowColor = theme.shadow;
       ctx.shadowBlur = 6;
-      ctx.fillText(labelText, badgeX + 18, badgeY + 14);
+      ctx.fillText(labelText, tagX + 7, tagY + 14);
+      ctx.restore();
+    }
 
-      // Speed Tag
-      const speedText = `v = ${track.speed || 5} km/h`;
-      ctx.font = '500 10px "JetBrains Mono", monospace';
-      const sw = ctx.measureText(speedText).width;
-      const spX = Math.max(vRect.x + 4, Math.min(x2 - sw - 6, vRect.x + vRect.w - sw - 8));
-      let spY = Math.max(vRect.y + 16, Math.min(y2 - 6, vRect.y + vRect.h - 6));
-      if (Math.abs(spY - badgeY) < 16) {
-        spY = badgeY + 24;
-      }
-      ctx.fillStyle = theme.text + 'c0';
-      ctx.fillText(speedText, spX, spY);
+    // Tracking ID & Speed Tag
+    if (state.toggles.ids) {
+      ctx.save();
+      const idText = `ID #${track.id} • ${track.speed} km/h`;
+      ctx.font = '600 10px "JetBrains Mono", monospace';
+      const tw = ctx.measureText(idText).width;
+      const tagW = tw + 12;
+      const tagH = 18;
+      const tagX = Math.max(vRect.x, Math.min(x1, vRect.x + vRect.w - tagW));
+      const tagY = Math.min(vRect.y + vRect.h - tagH, y2 + 4);
 
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.90)';
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+      ctx.lineWidth = 1;
+      roundRect(ctx, tagX, tagY, tagW, tagH, 3, true, true);
+
+      ctx.fillStyle = '#f8fafc';
+      ctx.fillText(idText, tagX + 6, tagY + 13);
       ctx.restore();
     }
   });
+
+  // Top Status Watermark
+  ctx.save();
+  ctx.font = '600 11px "JetBrains Mono", monospace';
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.35)';
+  ctx.fillText(`VISIONGRID AI LIVE • ${state.activeTracks.length} TARGETS IN VIEW`, vRect.x + 12, vRect.y + 24);
+  ctx.restore();
 }
 
 function roundRect(ctx, x, y, width, height, radius = 4, fill = false, stroke = false) {
@@ -837,125 +926,136 @@ function roundRect(ctx, x, y, width, height, radius = 4, fill = false, stroke = 
 
 function formatTime(seconds) {
   if (isNaN(seconds) || seconds < 0) return '00:00';
-  const mins = Math.floor(seconds / 60).toString().padStart(2, '0');
-  const secs = Math.floor(seconds % 60).toString().padStart(2, '0');
-  return `${mins}:${secs}`;
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
 function updateTimecode(now) {
-  let elapsed = (now - state.startTime) / 1000;
-  if (videoEl && !isNaN(videoEl.currentTime)) {
-    elapsed = videoEl.currentTime;
-  }
-  const mins = Math.floor(elapsed / 60).toString().padStart(2, '0');
-  const secs = Math.floor(elapsed % 60).toString().padStart(2, '0');
-  const ms = Math.floor((elapsed % 1) * 100).toString().padStart(2, '0');
-
-  const timeEl = document.getElementById('playback-time');
+  const timecodeEl = document.getElementById('playback-time');
   const frameEl = document.getElementById('playback-frame');
-  if (timeEl) timeEl.innerText = `T+ 00:${mins}:${secs}.${ms}`;
-  if (frameEl) frameEl.innerText = `Frame: #${state.frameCounter.toLocaleString('en-US')}`;
+  const progressEl = document.getElementById('video-progress-bar');
+  const durationTag = document.getElementById('video-duration-tag');
 
-  const progressBar = document.getElementById('video-progress-bar');
-  const durTag = document.getElementById('video-duration-tag');
-  if (videoEl && !isNaN(videoEl.duration) && videoEl.duration > 0) {
-    const pct = Math.min(100, Math.max(0, (videoEl.currentTime / videoEl.duration) * 100));
-    if (progressBar) progressBar.style.width = `${pct}%`;
-    if (durTag) durTag.innerText = `${formatTime(videoEl.currentTime)} / ${formatTime(videoEl.duration)}`;
-  } else {
-    if (progressBar) progressBar.style.width = '0%';
-    if (durTag) durTag.innerText = `${formatTime(elapsed)} / Live`;
+  if (videoEl && videoEl.duration) {
+    const cur = videoEl.currentTime || 0;
+    const dur = videoEl.duration || 1;
+    
+    // Auto-detect video loop restart (e.g. from end back to 0:00)
+    if (cur < lastVideoCurrentTime - 1.2 && lastVideoCurrentTime > 2.0) {
+      resetTracking(true);
+    }
+    lastVideoCurrentTime = cur;
+
+    const pct = Math.min(100, Math.max(0, (cur / dur) * 100));
+    if (progressEl) progressEl.style.width = `${pct}%`;
+    if (durationTag) durationTag.innerText = `${formatTime(cur)} / ${formatTime(dur)}`;
   }
+
+  const elapsed = (now - state.startTime) / 1000;
+  const hours = Math.floor(elapsed / 3600);
+  const minutes = Math.floor((elapsed % 3600) / 60);
+  const seconds = Math.floor(elapsed % 60);
+  const centis = Math.floor((elapsed % 1) * 100);
+
+  const formatted = `T+ ${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(centis).padStart(2, '0')}`;
+  if (timecodeEl) timecodeEl.innerText = formatted;
+  if (frameEl) frameEl.innerText = `#${state.frameCounter}`;
 }
 
 function updateMetricsDisplay() {
-  const fpsEl = document.getElementById('val-fps');
-  const latencyEl = document.getElementById('val-latency');
-  const activeEl = document.getElementById('val-active');
-  const totalEl = document.getElementById('val-total');
-  const inEl = document.getElementById('val-in');
-  const outEl = document.getElementById('val-out');
+  const valFps = document.getElementById('val-fps');
+  const valLat = document.getElementById('val-latency');
+  const valActive = document.getElementById('val-active');
+  const valTotal = document.getElementById('val-total');
+  const valIn = document.getElementById('val-in');
+  const valOut = document.getElementById('val-out');
 
-  const visibleTracks = state.activeTracks.filter(t => isClassAllowed(t.className));
-
-  if (fpsEl) fpsEl.innerText = state.fps.toFixed(1);
-  if (latencyEl) latencyEl.innerText = state.latency.toFixed(1);
-  if (activeEl) activeEl.innerText = visibleTracks.length;
-  if (totalEl) totalEl.innerText = state.totalTracks;
-  if (inEl) inEl.innerText = state.countIn;
-  if (outEl) outEl.innerText = state.countOut;
+  if (valFps) valFps.innerText = state.fps.toFixed(1);
+  if (valLat) valLat.innerText = state.latency.toFixed(1);
+  if (valActive) valActive.innerText = state.activeTracks.length;
+  if (valTotal) valTotal.innerText = state.totalTracks;
+  if (valIn) valIn.innerText = state.countIn;
+  if (valOut) valOut.innerText = state.countOut;
 
   updateClassDistribution();
 }
 
 function updateClassDistribution() {
+  if (!classDistEl) return;
   const counts = {};
+  
   state.activeTracks.forEach(t => {
-    if (!isClassAllowed(t.className)) return;
     const c = (t.className || 'object').toLowerCase();
     counts[c] = (counts[c] || 0) + 1;
   });
 
-  const visibleCount = state.activeTracks.filter(t => isClassAllowed(t.className)).length;
-  const totalActive = Math.max(1, visibleCount);
-  const tagEl = document.getElementById('active-class-count-tag');
-  if (tagEl) tagEl.innerText = `${visibleCount} active`;
-
-  if (classDistEl) {
-    const keys = Object.keys(counts);
-    if (keys.length === 0) {
-      classDistEl.innerHTML = '<div class="text-[11px] font-mono text-gray-500 py-2">No active targets in view</div>';
-      return;
-    }
-    classDistEl.innerHTML = keys.map(k => {
-      const theme = getClassTheme(k);
-      const count = counts[k];
-      const pct = Math.round((count / totalActive) * 100);
-      return `
-        <div>
-          <div class="flex justify-between text-xs font-mono mb-1">
-            <span class="text-gray-300 flex items-center gap-1.5 capitalize">
-              <span class="w-2 h-2 rounded-full" style="background-color: ${theme.border};"></span>
-              ${k}
-            </span>
-            <span class="font-bold text-white">${count}</span>
-          </div>
-          <div class="w-full bg-obsidian-panel rounded-full h-1.5 overflow-hidden">
-            <div class="h-1.5 rounded-full transition-all duration-300" style="width: ${pct}%; background-color: ${theme.border};"></div>
-          </div>
-        </div>
-      `;
-    }).join('');
+  const activeTag = document.getElementById('active-class-count-tag');
+  if (activeTag) {
+    const totalActive = Object.values(counts).reduce((a, b) => a + b, 0);
+    activeTag.innerText = `${totalActive} active`;
   }
+
+  const keys = Object.keys(counts);
+  if (keys.length === 0) {
+    classDistEl.innerHTML = `<div class="text-[11px] font-mono text-gray-500 py-2">No active targets in view</div>`;
+    return;
+  }
+
+  let html = '';
+  keys.forEach(k => {
+    const count = counts[k];
+    const theme = getClassTheme(k);
+    const maxCount = Math.max(...Object.values(counts), 1);
+    const barPct = Math.round((count / maxCount) * 100);
+
+    html += `
+      <div class="flex flex-col gap-1 text-xs font-mono">
+        <div class="flex justify-between items-center">
+          <span class="text-gray-300 font-medium capitalize flex items-center gap-1.5">
+            <span class="w-2 h-2 rounded-full" style="background: ${theme.border}"></span>
+            ${k}
+          </span>
+          <span class="font-bold text-white">${count}</span>
+        </div>
+        <div class="w-full h-1.5 bg-obsidian-border rounded-full overflow-hidden">
+          <div class="h-full rounded-full transition-all duration-300" style="width: ${barPct}%; background: ${theme.border}; box-shadow: 0 0 8px ${theme.border}"></div>
+        </div>
+      </div>
+    `;
+  });
+
+  classDistEl.innerHTML = html;
 }
 
 function addActivityLog(id, desc, color = 'lime') {
   const d = new Date();
-  const time = `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}:${d.getSeconds().toString().padStart(2, '0')}`;
-  state.eventLogs.unshift({ time, id, desc, type: color });
-  if (state.eventLogs.length > 30) state.eventLogs.pop();
+  const timeStr = d.toTimeString().split(' ')[0];
+  state.eventLogs.unshift({ time: timeStr, id, desc, color });
+  if (state.eventLogs.length > 40) state.eventLogs.pop();
   renderActivityFeed();
 }
 
 function renderActivityFeed() {
   if (!activityFeedEl) return;
-  activityFeedEl.innerHTML = state.eventLogs.map(l => {
-    let borderClass = 'border-lime';
-    let textClass = 'text-lime';
-    if (l.type === 'cyan') { borderClass = 'border-cyan-400'; textClass = 'text-cyan-300'; }
-    if (l.type === 'purple') { borderClass = 'border-purple-400'; textClass = 'text-purple-300'; }
-    if (l.type === 'amber') { borderClass = 'border-amber-400'; textClass = 'text-amber-400'; }
-    if (l.type === 'blue') { borderClass = 'border-blue-400'; textClass = 'text-blue-300'; }
-    if (l.type === 'red') { borderClass = 'border-red-500'; textClass = 'text-red-400'; }
-
-    return `
-      <div class="border-l-2 ${borderClass} pl-2 leading-relaxed">
-        <span class="text-gray-500">${l.time}</span>
-        <span class="${textClass} font-bold ml-1">${l.id}</span>
-        <span class="text-gray-300 block">${l.desc}</span>
+  if (state.eventLogs.length === 0) {
+    activityFeedEl.innerHTML = `
+      <div class="border-l-2 border-lime pl-2 leading-relaxed">
+        <span class="text-gray-500">SYSTEM</span>
+        <span class="text-lime font-bold ml-1">INFO</span>
+        <span class="text-gray-300 block">VisionGrid Initialized</span>
       </div>
     `;
-  }).join('');
+    return;
+  }
+
+  activityFeedEl.innerHTML = state.eventLogs.map(l => `
+    <div class="border-l-2 border-${l.color} pl-2 leading-relaxed">
+      <span class="text-gray-500">${l.time}</span>
+      <span class="text-${l.color} font-bold ml-1">${l.id}</span>
+      <span class="text-gray-300 block">${l.desc}</span>
+    </div>
+  `).join('');
 }
 
 function clearLogs() {
@@ -963,47 +1063,41 @@ function clearLogs() {
   renderActivityFeed();
 }
 
-// Inside Video Player Controls Management
-let controlsHideTimer = null;
-let currentSpeed = 1.0;
+// ==========================================
+// 6. In-Video Controls & Playback
+// ==========================================
+let controlsTimeout = null;
 
 function showInVideoControls() {
-  const controls = document.getElementById('in-video-controls');
   const header = document.getElementById('in-video-header');
-  if (controls) {
-    controls.style.opacity = '1';
-    controls.style.pointerEvents = 'auto';
-  }
+  const footer = document.getElementById('in-video-footer');
   if (header) {
-    header.style.opacity = '1';
+    header.classList.remove('opacity-0');
+    header.classList.add('opacity-100');
   }
-  clearTimeout(controlsHideTimer);
-  if (!state.isPaused && !videoEl.paused && !videoEl.ended) {
-    controlsHideTimer = setTimeout(() => {
-      if (!state.isPaused) {
-        if (controls) {
-          controls.style.opacity = '0';
-          controls.style.pointerEvents = 'none';
-        }
-        if (header) {
-          header.style.opacity = '0';
-        }
-      }
-    }, 2800);
+  if (footer) {
+    footer.classList.remove('opacity-0', 'translate-y-4');
+    footer.classList.add('opacity-100', 'translate-y-0');
   }
+
+  clearTimeout(controlsTimeout);
+  controlsTimeout = setTimeout(() => {
+    if (!state.isPaused && videoEl && !videoEl.paused) {
+      hideInVideoControls();
+    }
+  }, 3500);
 }
 
 function hideInVideoControls() {
-  const controls = document.getElementById('in-video-controls');
   const header = document.getElementById('in-video-header');
-  if (!state.isPaused && !videoEl.paused && !videoEl.ended) {
-    if (controls) {
-      controls.style.opacity = '0';
-      controls.style.pointerEvents = 'none';
-    }
-    if (header) {
-      header.style.opacity = '0';
-    }
+  const footer = document.getElementById('in-video-footer');
+  if (header) {
+    header.classList.remove('opacity-100');
+    header.classList.add('opacity-0');
+  }
+  if (footer) {
+    footer.classList.remove('opacity-100', 'translate-y-0');
+    footer.classList.add('opacity-0', 'translate-y-4');
   }
 }
 
@@ -1011,18 +1105,16 @@ function showCenterRipple(type) {
   const ripple = document.getElementById('center-play-ripple');
   const icon = document.getElementById('center-ripple-icon');
   if (!ripple || !icon) return;
-  
+
   if (type === 'play') {
     icon.className = 'fa-solid fa-play ml-1';
-  } else if (type === 'pause') {
+  } else {
     icon.className = 'fa-solid fa-pause';
-  } else if (type === 'replay') {
-    icon.className = 'fa-solid fa-rotate-left';
   }
-  
+
   ripple.classList.remove('opacity-0', 'scale-50');
   ripple.classList.add('opacity-100', 'scale-100');
-  
+
   setTimeout(() => {
     ripple.classList.remove('opacity-100', 'scale-100');
     ripple.classList.add('opacity-0', 'scale-50');
@@ -1035,9 +1127,10 @@ function handleCanvasClick(event) {
 
 function nextSamplePreset() {
   const nextKey = currentSampleClip === 'sample1' ? 'sample2' : 'sample1';
-  setSource('sample', nextKey);
+  loadSampleClip(nextKey);
 }
 
+let currentSpeed = 1.0;
 const SPEED_PRESETS = [
   { val: 0.5, id: 'speed-05' },
   { val: 1.0, id: 'speed-10' },
@@ -1061,105 +1154,92 @@ function setSpeed(speed) {
       }
     }
   });
-  addActivityLog('PLAYBACK', `Playback speed: ${currentSpeed}x`, 'cyan');
+  addActivityLog('SPEED', `Playback speed set to ${currentSpeed}x`, 'cyan');
 }
 
+let isMuted = true;
 function toggleMute() {
-  if (!videoEl) return;
-  videoEl.muted = !videoEl.muted;
+  isMuted = !isMuted;
+  if (videoEl) videoEl.muted = isMuted;
   const icon = document.getElementById('volume-icon');
   const slider = document.getElementById('volume-slider');
-  if (videoEl.muted) {
-    if (icon) icon.className = 'fa-solid fa-volume-xmark text-red-400';
-    if (slider) slider.value = 0;
-  } else {
-    if (icon) icon.className = 'fa-solid fa-volume-high';
-    if (slider) slider.value = videoEl.volume || 1;
+  if (icon) {
+    icon.className = isMuted ? 'fa-solid fa-volume-xmark text-red-400' : 'fa-solid fa-volume-high text-lime';
+  }
+  if (slider) {
+    slider.value = isMuted ? 0 : 1;
   }
 }
 
 function setVolume(val) {
-  if (!videoEl) return;
-  videoEl.volume = parseFloat(val);
-  videoEl.muted = (videoEl.volume === 0);
+  const v = parseFloat(val);
+  if (videoEl) {
+    videoEl.volume = v;
+    videoEl.muted = (v === 0);
+  }
+  isMuted = (v === 0);
   const icon = document.getElementById('volume-icon');
-  if (videoEl.muted) {
-    if (icon) icon.className = 'fa-solid fa-volume-xmark text-red-400';
-  } else if (videoEl.volume < 0.5) {
-    if (icon) icon.className = 'fa-solid fa-volume-low';
-  } else {
-    if (icon) icon.className = 'fa-solid fa-volume-high';
+  if (icon) {
+    if (v === 0) icon.className = 'fa-solid fa-volume-xmark text-red-400';
+    else if (v < 0.5) icon.className = 'fa-solid fa-volume-low text-yellow-400';
+    else icon.className = 'fa-solid fa-volume-high text-lime';
   }
 }
 
 function updatePlayPauseButton(status) {
-  const playIcon = document.getElementById('play-icon');
-  const btnPlay = document.getElementById('btn-play');
-  if (!btnPlay) return;
-
+  const icon = document.getElementById('play-icon');
+  if (!icon) return;
   if (status === 'playing') {
-    if (playIcon) playIcon.className = 'fa-solid fa-pause';
-    btnPlay.className = 'w-8 h-8 rounded-lg bg-lime hover:bg-lime-glow text-black font-bold flex items-center justify-center text-xs transition-all shadow-glow-lime hover:scale-105 active:scale-95';
-    btnPlay.title = 'Pause Video (Space / P)';
+    icon.className = 'fa-solid fa-pause';
   } else if (status === 'ended') {
-    if (playIcon) playIcon.className = 'fa-solid fa-rotate-left';
-    btnPlay.className = 'w-8 h-8 rounded-lg bg-lime hover:bg-lime-glow text-black font-bold flex items-center justify-center text-xs transition-all shadow-glow-lime hover:scale-105 active:scale-95';
-    btnPlay.title = 'Replay Video (Space / P)';
+    icon.className = 'fa-solid fa-rotate-left';
   } else {
-    if (playIcon) playIcon.className = 'fa-solid fa-play ml-0.5';
-    btnPlay.className = 'w-8 h-8 rounded-lg bg-black/60 hover:bg-lime/20 border border-lime text-lime font-bold flex items-center justify-center text-xs transition-all shadow-glow-lime hover:scale-105 active:scale-95';
-    btnPlay.title = 'Play / Resume Video (Space / P)';
+    icon.className = 'fa-solid fa-play ml-0.5';
   }
 }
 
-function togglePlayPause() {
-  if (videoEl.ended || (videoEl.duration && videoEl.currentTime >= videoEl.duration - 0.1)) {
-    videoEl.currentTime = 0;
-    state.isPaused = false;
-    videoEl.play().catch(() => {});
-    updatePlayPauseButton('playing');
-    showCenterRipple('replay');
-    showInVideoControls();
-    addActivityLog('PLAYBACK', 'Replaying video from beginning', 'lime');
-  } else if (state.isPaused || videoEl.paused) {
-    state.isPaused = false;
-    videoEl.play().catch(() => {});
-    updatePlayPauseButton('playing');
-    showCenterRipple('play');
-    showInVideoControls();
-    addActivityLog('PLAYBACK', 'Resumed video playback', 'lime');
+async function togglePlayPause() {
+  if (!videoEl) return;
+  if (videoEl.paused || videoEl.ended) {
+    try {
+      await videoEl.play();
+      state.isPaused = false;
+      updatePlayPauseButton('playing');
+      showCenterRipple('play');
+    } catch (e) {
+      console.warn('Play error:', e);
+    }
   } else {
-    state.isPaused = true;
     videoEl.pause();
+    state.isPaused = true;
     updatePlayPauseButton('paused');
     showCenterRipple('pause');
     showInVideoControls();
-    addActivityLog('PLAYBACK', 'Paused video stream', 'amber');
   }
 }
 
 function seekVideo(event) {
-  if (!videoEl || isNaN(videoEl.duration) || videoEl.duration <= 0) return;
-  const bg = document.getElementById('video-progress-bg');
-  if (!bg) return;
-  const rect = bg.getBoundingClientRect();
-  const clickX = Math.max(0, Math.min(event.clientX - rect.left, rect.width));
-  const ratio = clickX / rect.width;
-  videoEl.currentTime = ratio * videoEl.duration;
+  const container = document.getElementById('video-progress-container');
+  if (!container || !videoEl || !videoEl.duration) return;
+  const rect = container.getBoundingClientRect();
+  const clickX = event.clientX - rect.left;
+  const pct = Math.max(0, Math.min(1, clickX / rect.width));
+  videoEl.currentTime = pct * videoEl.duration;
   
-  if (videoEl.ended) {
-    state.isPaused = false;
-    videoEl.play().catch(() => {});
-    updatePlayPauseButton('playing');
+  if (state.isPaused) {
+    videoEl.play().then(() => {
+      state.isPaused = false;
+      updatePlayPauseButton('playing');
+    }).catch(() => {});
   }
 }
 
 function captureSnapshot() {
   const link = document.createElement('a');
-  link.download = `visiongrid_snapshot_${Date.now()}.png`;
+  link.download = `visiongrid_frame_${Date.now()}.png`;
   link.href = canvasEl.toDataURL('image/png');
   link.click();
-  addActivityLog('SNAPSHOT', 'Captured frame PNG', 'lime');
+  addActivityLog('EXPORT', 'High-res Snapshot saved to Downloads', 'lime');
 }
 
 function toggleRecording() {
@@ -1168,16 +1248,14 @@ function toggleRecording() {
       state.mediaRecorder.stop();
     }
     state.isRecording = false;
-    const btnRecord = document.getElementById('btn-record');
-    const recText = document.getElementById('record-text');
-    if (btnRecord) btnRecord.className = 'px-3 py-1.5 rounded-lg bg-obsidian-panel border border-obsidian-border text-gray-300 hover:text-white hover:border-red-400/40 font-medium text-xs flex items-center gap-2 transition-all';
-    if (recText) recText.innerText = 'Record Video';
-    addActivityLog('RECORDER', 'Video capture finished and saved', 'lime');
+    const recIcon = document.getElementById('record-icon');
+    if (recIcon) recIcon.className = 'fa-solid fa-circle text-[10px] text-red-500';
+    addActivityLog('REC', 'Recording stopped. Processing video file...', 'amber');
   } else {
-    state.recordedChunks = [];
     try {
       const stream = canvasEl.captureStream(30);
-      state.mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+      state.recordedChunks = [];
+      state.mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm; codecs=vp9' });
       state.mediaRecorder.ondataavailable = (e) => {
         if (e.data.size > 0) state.recordedChunks.push(e.data);
       };
@@ -1186,96 +1264,105 @@ function toggleRecording() {
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `visiongrid_clip_${Date.now()}.webm`;
+        a.download = `visiongrid_recording_${Date.now()}.webm`;
         a.click();
+        addActivityLog('REC', 'Tracked Video Exported (.webm)', 'lime');
       };
       state.mediaRecorder.start();
       state.isRecording = true;
-      const btnRecord = document.getElementById('btn-record');
-      const recText = document.getElementById('record-text');
-      if (btnRecord) btnRecord.className = 'px-3 py-1.5 rounded-lg bg-red-500/20 border border-red-500 text-red-400 font-bold text-xs flex items-center gap-2 transition-all animate-pulse';
-      if (recText) recText.innerText = 'Stop Recording';
-      addActivityLog('RECORDER', 'Recording video stream...', 'red');
+      const recIcon = document.getElementById('record-icon');
+      if (recIcon) recIcon.className = 'fa-solid fa-stop text-[10px] text-lime animate-pulse';
+      addActivityLog('REC', 'Recording started (Live 30 FPS Stream)', 'lime');
     } catch (e) {
-      console.error(e);
+      console.error('MediaRecorder error:', e);
+      addActivityLog('REC', 'Screen recording not supported in this browser', 'red');
     }
   }
 }
 
-async function resetTracking() {
+let lastVideoCurrentTime = 0;
+
+async function resetTracking(isLoopReset = false) {
   state.countIn = 0;
   state.countOut = 0;
-  state.totalTracks = 0;
   state.crossedIds = {};
-  state.trackHistories = {};
   state.activeTracks = [];
-  state.rawTracks = [];
+  state.pythonTracks = [];
+  state.trackHistories = {};
+  state.totalTracks = 0;
   webTracker.reset();
 
-  if (state.isPythonActive) {
-    try {
-      await fetch('/api/reset', { method: 'POST' });
-    } catch (e) {}
+  if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+    state.ws.send(JSON.stringify({ action: 'reset' }));
   }
-  addActivityLog('TRACKER', 'SORT tracker reset', 'amber');
+
+  fetch('/api/reset', { method: 'POST' }).catch(() => {});
+
+  if (!isLoopReset) {
+    addActivityLog('SYSTEM', 'Tracker & telemetry counters reset to 0', 'lime');
+  }
+  updateMetricsDisplay();
 }
 
 function toggleFullscreen() {
+  const frame = document.getElementById('video-player-frame');
   if (!document.fullscreenElement) {
-    document.documentElement.requestFullscreen().catch(() => {});
+    if (frame.requestFullscreen) frame.requestFullscreen();
+    else if (frame.webkitRequestFullscreen) frame.webkitRequestFullscreen();
   } else {
-    document.exitFullscreen().catch(() => {});
+    if (document.exitFullscreen) document.exitFullscreen();
   }
 }
 
 function exportData(format) {
-  const data = {
-    exportedAt: new Date().toISOString(),
-    engine: state.isPythonActive ? 'Python YOLOv8 + SORT' : 'VisionGrid WebGL AI + SORT',
-    metrics: {
-      fps: state.fps.toFixed(1),
-      latencyMs: state.latency.toFixed(1),
-      totalTracks: state.totalTracks,
-      activeTracks: state.activeTracks.length,
-      tripwireIn: state.countIn,
-      tripwireOut: state.countOut
-    },
-    activeTracks: state.activeTracks,
-    eventLogs: state.eventLogs
+  const telemetry = {
+    timestamp: new Date().toISOString(),
+    fps: state.fps,
+    latency_ms: state.latency,
+    total_tracks: state.totalTracks,
+    count_in: state.countIn,
+    count_out: state.countOut,
+    active_targets: state.activeTracks.map(t => ({
+      id: t.id,
+      class: t.className,
+      confidence: t.score,
+      speed_kmh: t.speed,
+      bbox: t.bbox
+    }))
   };
 
-  let fileContent, mimeType, ext;
   if (format === 'json') {
-    fileContent = JSON.stringify(data, null, 2);
-    mimeType = 'application/json';
-    ext = 'json';
-  } else {
-    let csv = 'Timestamp,EntityID,Description,Type\n';
-    for (const log of state.eventLogs) {
-      csv += `"${log.time}","${log.id}","${log.desc}","${log.type}"\n`;
-    }
-    fileContent = csv;
-    mimeType = 'text/csv';
-    ext = 'csv';
+    const blob = new Blob([JSON.stringify(telemetry, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `visiongrid_telemetry_${Date.now()}.json`;
+    a.click();
+    addActivityLog('EXPORT', 'Telemetry exported as JSON', 'lime');
+  } else if (format === 'csv') {
+    let csv = 'ID,Class,Confidence,Speed_KMH,X1,Y1,X2,Y2\n';
+    state.activeTracks.forEach(t => {
+      csv += `${t.id},${t.className},${(t.score || 0).toFixed(2)},${t.speed},${t.bbox.map(v => Math.round(v)).join(',')}\n`;
+    });
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `visiongrid_telemetry_${Date.now()}.csv`;
+    a.click();
+    addActivityLog('EXPORT', 'Telemetry exported as CSV', 'lime');
   }
-
-  const blob = new Blob([fileContent], { type: mimeType });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = `visiongrid_telemetry_${Date.now()}.${ext}`;
-  a.click();
-  addActivityLog('EXPORT', `Exported telemetry (${ext.toUpperCase()})`, 'lime');
 }
 
-// Source Handling (Sample clips, Webcam, Upload)
+// ==========================================
+// 7. Source Switching & Sample Clips
+// ==========================================
 const SAMPLE_CLIPS = {
   sample1: {
-    name: 'Sample 1 (Person, Vehicles, Animals)',
+    name: 'Sample 1: Traffic & Pedestrians',
     src: 'sample_data/Sample1.mp4',
     btnId: 'btn-sample-1'
   },
   sample2: {
-    name: 'Sample 2 (Person, Vehicles, Animals)',
+    name: 'Sample 2: Walkway & Street',
     src: 'sample_data/Sample2.mp4',
     btnId: 'btn-sample-2'
   }
@@ -1320,7 +1407,7 @@ async function setSource(src, sampleKey = currentSampleClip) {
   state.source = src;
   updateSourceButtons(src);
   state.activeTracks = [];
-  state.rawTracks = [];
+  state.pythonTracks = [];
   state.trackHistories = {};
   webTracker.reset();
 
@@ -1368,105 +1455,109 @@ async function setSource(src, sampleKey = currentSampleClip) {
     state.isPaused = false;
     
     try {
-      const playPromise = videoEl.play();
-      if (playPromise !== undefined) {
-        await playPromise;
-      }
-      state.isPaused = false;
+      await videoEl.play();
       updatePlayPauseButton('playing');
-      addActivityLog('INPUT', `Loaded ${clip.name}`, 'lime');
-    } catch (e) {
-      console.warn('Autoplay prevented, will play on user interaction:', e);
-      state.isPaused = false;
-      updatePlayPauseButton('playing');
+      addActivityLog('INPUT', `Preset loaded: ${clip.name}`, 'lime');
+    } catch (err) {
+      console.warn('Autoplay prevented:', err);
+      state.isPaused = true;
+      updatePlayPauseButton('paused');
+      addActivityLog('INPUT', 'Click Play ▶ to begin video stream', 'amber');
     }
   }
 }
 
 function triggerVideoUpload() {
-  document.getElementById('video-upload-input').click();
+  const input = document.getElementById('video-file-input');
+  if (input) input.click();
 }
 
 function handleVideoFile(event) {
   const file = event.target.files[0];
   if (!file) return;
+
   const url = URL.createObjectURL(file);
-  state.source = 'upload';
-  updateSourceButtons('upload');
-  state.activeTracks = [];
-  state.rawTracks = [];
-  state.trackHistories = {};
-  webTracker.reset();
+  const headerTitle = document.getElementById('viewport-header-title');
+  if (headerTitle) headerTitle.innerText = `Uploaded Video: ${file.name}`;
 
   if (videoEl.srcObject) {
     videoEl.srcObject.getTracks().forEach(t => t.stop());
     videoEl.srcObject = null;
   }
+
   videoEl.src = url;
+  videoEl.crossOrigin = 'anonymous';
   videoEl.muted = true;
-  videoEl.defaultMuted = true;
   videoEl.playsInline = true;
   videoEl.loop = true;
   state.isPaused = false;
 
-  const playPromise = videoEl.play();
-  if (playPromise !== undefined) {
-    playPromise.then(() => {
-      state.isPaused = false;
-      updatePlayPauseButton('playing');
-    }).catch(err => {
-      console.warn('Video play warning on upload:', err);
-      state.isPaused = false;
-      updatePlayPauseButton('playing');
-    });
-  }
+  videoEl.play().then(() => {
+    updatePlayPauseButton('playing');
+    addActivityLog('UPLOAD', `Loaded video file: ${file.name}`, 'lime');
+  }).catch(() => {
+    state.isPaused = true;
+    updatePlayPauseButton('paused');
+  });
 
-  const headerTitle = document.getElementById('viewport-header-title');
-  if (headerTitle) headerTitle.innerText = `Uploaded Video: ${file.name}`;
-  addActivityLog('INPUT', `Uploaded: ${file.name}`, 'lime');
+  // Try uploading to backend if Python active
+  if (state.isPythonActive) {
+    const formData = new FormData();
+    formData.append('file', file);
+    fetch('/api/upload', { method: 'POST', body: formData })
+      .then(res => res.json())
+      .then(data => {
+        addActivityLog('UPLOAD', 'Video synced with Python YOLOv8 backend', 'lime');
+      })
+      .catch(() => {});
+  }
 }
 
-// Sliders Handlers
+// ==========================================
+// 8. Sliders, Toggles & Filters
+// ==========================================
 function updateConfidence(val) {
-  state.confThresh = parseFloat(val) / 100;
-  document.getElementById('conf-val').innerText = `${val}%`;
-  if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-    try {
-      fetch('/api/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ conf_thresh: state.confThresh })
-      });
-    } catch (e) {}
+  const v = parseFloat(val) / 100;
+  state.confThresh = v;
+  const tag = document.getElementById('conf-val');
+  if (tag) tag.innerText = `${val}%`;
+
+  if (state.isPythonActive) {
+    fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ conf_thresh: v })
+    }).catch(() => {});
   }
 }
 
 function updateMaxAge(val) {
-  state.maxAge = parseInt(val, 10);
-  webTracker.maxAge = Math.max(15, state.maxAge * 2);
-  document.getElementById('age-val').innerText = `${val} frames`;
-  if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-    try {
-      fetch('/api/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ max_age: state.maxAge })
-      });
-    } catch (e) {}
+  const v = parseInt(val);
+  state.maxAge = v;
+  webTracker.maxAge = v;
+  const tag = document.getElementById('age-val');
+  if (tag) tag.innerText = `${v} frames`;
+
+  if (state.isPythonActive) {
+    fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ max_age: v })
+    }).catch(() => {});
   }
 }
 
 function updateLinePos(val) {
   state.linePos = parseFloat(val) / 100;
-  document.getElementById('line-val').innerText = `${val}%`;
+  const tag = document.getElementById('line-val');
+  if (tag) tag.innerText = `${val}%`;
 }
 
-// Feature Toggle Handlers
 function toggleSetting(name) {
-  const el = document.getElementById(`toggle-${name}`);
-  if (el) {
-    state.toggles[name] = el.checked;
-    addActivityLog('TOGGLE', `${name.toUpperCase()} ${el.checked ? 'ENABLED' : 'DISABLED'}`, el.checked ? 'lime' : 'amber');
+  if (state.toggles[name] !== undefined) {
+    state.toggles[name] = !state.toggles[name];
+    const checkbox = document.getElementById(`toggle-${name}`);
+    if (checkbox) checkbox.checked = state.toggles[name];
   }
 }
 
@@ -1483,28 +1574,6 @@ function filterClass(cls, btn) {
 }
 
 // Video Event Listeners
-videoEl.addEventListener('loadeddata', () => {
-  if (webModel && !state.isPythonActive) {
-    const vw = videoEl.videoWidth || 640;
-    const vh = videoEl.videoHeight || 360;
-    const sendW = 416;
-    const sendH = Math.max(1, Math.round(sendW * (vh / vw)));
-    aiCanvas.width = sendW;
-    aiCanvas.height = sendH;
-    try {
-      aiCtx.drawImage(videoEl, 0, 0, sendW, sendH);
-      webModel.detect(aiCanvas, 20, state.confThresh).then(rawDets => {
-        const formattedDets = (rawDets || []).map(d => ({
-          bbox: [d.bbox[0], d.bbox[1], d.bbox[0] + d.bbox[2], d.bbox[1] + d.bbox[3]],
-          score: d.score,
-          className: d.class
-        }));
-        webTracker.update(formattedDets);
-      }).catch(() => {});
-    } catch (e) {}
-  }
-});
-
 videoEl.addEventListener('ended', () => {
   state.isPaused = true;
   updatePlayPauseButton('ended');
