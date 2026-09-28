@@ -1,7 +1,7 @@
 """
 YOLOv8 and Pre-trained Deep Learning Object Detector Module
 High-precision detection with Hierarchical Nested Box Suppression (IoMin),
-Cross-Class NMS, and fast 416px tensor acceleration.
+Cross-Class Conflict Filtering, and fast 416px tensor acceleration.
 """
 
 import time
@@ -24,18 +24,15 @@ COCO_CLASSES = [
     'book', 'clock', 'vase', 'scissors', 'teddy bear', 'hair drier', 'toothbrush'
 ]
 
-SURVEILLANCE_CLASSES = {
-    'person', 'car', 'truck', 'bus', 'motorcycle', 'bicycle', 'dog', 'cat',
-    'bird', 'horse', 'backpack', 'handbag', 'suitcase', 'cell phone', 'laptop', 'bench'
-}
+VEHICLE_CLASS_IDS = {1, 2, 3, 5, 7}  # bicycle, car, motorcycle, bus, truck
 
 
-def nms_hierarchical(boxes, scores, class_ids, iou_thresh=0.50, same_class_containment=0.80):
+def nms_hierarchical(boxes, scores, class_ids, iou_thresh=0.45, same_class_containment=0.50):
     """
-    Hierarchical suppression:
-    1. Suppresses duplicate detections of the same class with IoU > 0.50.
-    2. Suppresses nested sub-boxes of the SAME class (e.g. limbs/torso detected as separate 'person' inside a body) with containment > 0.80.
-    3. For different classes, only suppresses if bounding boxes are practically identical (IoU > 0.85).
+    Robust suppression:
+    1. Same Class: Suppresses duplicate sub-boxes (limbs/torso on same person) if containment > 0.50 or IoU > 0.45.
+    2. Cross-Class Conflict: Suppresses vehicle class confusion (e.g. motorbike also detected as car/bicycle on same pixels with IoU > 0.40).
+    3. Noise: Suppresses low-confidence artifacts inside larger objects (e.g. bench/chair inside a van).
     """
     if len(boxes) == 0:
         return []
@@ -76,20 +73,25 @@ def nms_hierarchical(boxes, scores, class_ids, iou_thresh=0.50, same_class_conta
         
         same_cls = (class_ids[rest] == class_ids[i])
         
-        # Same class: suppress if IoU > iou_thresh OR containment > 0.80
+        # Same class suppression: duplicate sub-boxes (containment > 0.50) or high IoU
         suppress_same = same_cls & ((iou > iou_thresh) | (containment > same_class_containment))
         
-        # Different class: suppress only if near identical bounding boxes
-        suppress_diff = (~same_cls) & (iou > 0.85)
+        # Cross-class vehicle conflict suppression
+        is_i_veh = class_ids[i] in VEHICLE_CLASS_IDS
+        is_rest_veh = np.isin(class_ids[rest], list(VEHICLE_CLASS_IDS))
+        suppress_veh_conflict = (~same_cls) & is_i_veh & is_rest_veh & ((iou > 0.40) | (containment > 0.55))
         
-        suppress_mask = ~(suppress_same | suppress_diff)
+        # General near-identical box overlap across any class
+        suppress_identical = (~same_cls) & (iou > 0.70)
+        
+        suppress_mask = ~(suppress_same | suppress_veh_conflict | suppress_identical)
         order = rest[suppress_mask]
 
     return keep
 
 
 class ObjectDetector:
-    def __init__(self, model_name='yolov8n.pt', conf_thresh=0.40, iou_thresh=0.45, allowed_classes=None):
+    def __init__(self, model_name='yolov8n.pt', conf_thresh=0.50, iou_thresh=0.45, allowed_classes=None):
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         print(f"[Detector] Initializing YOLOv8 model '{model_name}' on device: {self.device}...")
         self.model = YOLO(model_name)
@@ -143,9 +145,6 @@ class ObjectDetector:
         return cls_id, score
 
     def detect(self, frame):
-        """
-        Runs object detection on a single BGR OpenCV image frame with 416px fast inference.
-        """
         t0 = time.perf_counter()
         
         results = self.model.predict(
@@ -171,10 +170,9 @@ class ObjectDetector:
 
                 cls_name = self.class_names.get(cls_id, str(cls_id)).lower()
 
-                # Min bounding box dimensions check
                 bw = xyxy[2] - xyxy[0]
                 bh = xyxy[3] - xyxy[1]
-                if bw < 12 or bh < 12:
+                if bw < 14 or bh < 14:
                     continue
 
                 cls_id, score = self._refine_animal(frame, xyxy, cls_id, score)
@@ -189,13 +187,12 @@ class ObjectDetector:
         detected_classes = {}
         detections = []
 
-        # Apply Hierarchical Nested Box & Cross-Class NMS
         if len(boxes_list) > 0:
             raw_boxes = np.array(boxes_list, dtype=np.float32)
             raw_scores = np.array(scores_list, dtype=np.float32)
             raw_classes = np.array(class_ids_list, dtype=np.int32)
             
-            keep_indices = nms_hierarchical(raw_boxes, raw_scores, raw_classes, iou_thresh=0.50, same_class_containment=0.80)
+            keep_indices = nms_hierarchical(raw_boxes, raw_scores, raw_classes, iou_thresh=0.45, same_class_containment=0.50)
             
             for idx in keep_indices:
                 b = raw_boxes[idx]

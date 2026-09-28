@@ -160,9 +160,9 @@ class WebSortTracker {
     this.trackers = this.trackers.filter(t => t.timeSinceUpdate <= this.maxAge);
   }
 
-  getActiveTracks() {
+    getActiveTracks() {
     return this.trackers
-      .filter(t => t.timeSinceUpdate <= this.maxAge && t.hits >= this.minHits)
+      .filter(t => t.timeSinceUpdate <= 3 && (t.hits >= 2 || (t.hits >= 1 && t.score >= 0.58)))
       .map(t => ({
         id: t.id,
         className: t.className,
@@ -188,7 +188,7 @@ const state = {
   recordedChunks: [],
   ws: null,
   isPythonActive: false,
-  confThresh: 0.40,
+  confThresh: 0.55,
   maxAge: 25,
   linePos: 0.5,
   countIn: 0,
@@ -405,12 +405,17 @@ async function initWebAI() {
 
 // Hierarchical Nested Box Suppression:
 // Suppresses duplicate limb/sub-part boxes of the SAME class (containment > 0.80) while preserving distinct objects.
-function suppressNestedDetections(detections, sameClassContainment = 0.80, iouThresh = 0.50) {
+// Robust Hierarchical & Cross-Class Suppression:
+// 1. Same-Class: Eliminates duplicate limb/torso sub-boxes (containment > 0.50).
+// 2. Cross-Class Vehicle: Eliminates motorbike/bicycle/car pixel confusion (IoU > 0.40).
+// 3. Noise Artifacts: Eliminates false reflections/boxes inside vehicles.
+function suppressNestedDetections(detections, sameClassContainment = 0.50, sameClassIou = 0.45, crossClassIou = 0.40) {
   if (!detections || detections.length <= 1) return detections || [];
   
   const sorted = [...detections].sort((a, b) => (b.score || 0) - (a.score || 0));
   const keep = [];
-  
+  const VEHICLE_CLASSES = new Set(['car', 'truck', 'bus', 'motorcycle', 'bicycle']);
+
   for (let i = 0; i < sorted.length; i++) {
     const dA = sorted[i];
     const [ax1, ay1, ax2, ay2] = dA.bbox;
@@ -439,14 +444,30 @@ function suppressNestedDetections(detections, sameClassContainment = 0.80, iouTh
         const isSameClass = (dA.className === dB.className);
         
         if (isSameClass) {
-          // Suppress same-class sub-box or heavy overlap
-          if (iou > iouThresh || containment > sameClassContainment) {
+          // Suppress duplicate limb/sub-part boxes
+          if (iou > sameClassIou || containment > sameClassContainment) {
             shouldSuppress = true;
             break;
           }
         } else {
-          // Different classes: only suppress if bounding boxes are practically identical
-          if (iou > 0.85) {
+          // Cross-class vehicle conflict (e.g. motorbike also detected as car/bicycle on same pixels)
+          const isBothVehicles = VEHICLE_CLASSES.has(dA.className) && VEHICLE_CLASSES.has(dB.className);
+          if (isBothVehicles && (iou > crossClassIou || containment > 0.55)) {
+            shouldSuppress = true;
+            break;
+          }
+          // Bench/chair detected inside a vehicle
+          if ((dA.className === 'bench' || dA.className === 'chair') && VEHICLE_CLASSES.has(dB.className) && containment > 0.40) {
+            shouldSuppress = true;
+            break;
+          }
+          // Person falsely detected inside vehicle body with lower score
+          if (dA.className === 'person' && VEHICLE_CLASSES.has(dB.className) && containment > 0.60 && dA.score < 0.65) {
+            shouldSuppress = true;
+            break;
+          }
+          // General duplicate object with heavy IoU overlap across any class
+          if (iou > 0.70) {
             shouldSuppress = true;
             break;
           }
