@@ -538,16 +538,26 @@ function syncWebTracksToState(vRect, fw, fh) {
   state.totalTracks = webTracker.totalTracksCount;
 
   state.activeTracks = tracks.map(t => {
-    const x1 = vRect.x + (t.bbox[0] / fw) * vRect.w;
-    const y1 = vRect.y + (t.bbox[1] / fh) * vRect.h;
-    const x2 = vRect.x + (t.bbox[2] / fw) * vRect.w;
-    const y2 = vRect.y + (t.bbox[3] / fh) * vRect.h;
-    const centerY = (y1 + y2) / 2;
+    let x1 = vRect.x + (t.bbox[0] / fw) * vRect.w;
+    let y1 = vRect.y + (t.bbox[1] / fh) * vRect.h;
+    let x2 = vRect.x + (t.bbox[2] / fw) * vRect.w;
+    let y2 = vRect.y + (t.bbox[3] / fh) * vRect.h;
 
     const scaleX = vRect.w / fw;
     const scaleY = vRect.h / fh;
-    const vx = (t.vx || 0) * scaleX;
-    const vy = (t.vy || 0) * scaleY;
+    let vx = (t.vx || 0) * scaleX;
+    let vy = (t.vy || 0) * scaleY;
+
+    // Flip horizontally in Webcam selfie/mirror mode
+    if (state.source === 'webcam') {
+      const origX1 = x1;
+      const origX2 = x2;
+      x1 = vRect.x + (vRect.w - (origX2 - vRect.x));
+      x2 = vRect.x + (vRect.w - (origX1 - vRect.x));
+      vx = -vx;
+    }
+
+    const centerY = (y1 + y2) / 2;
     const speed = Math.round(Math.hypot(vx, vy) * 2.2) || 5;
 
     // Tripwire Crossing Check
@@ -653,16 +663,26 @@ function syncPythonTracksToState(vRect) {
   const lineY = vRect.y + vRect.h * state.linePos;
 
   state.activeTracks = (state.pythonTracks || []).map(t => {
-    const x1 = vRect.x + (t.bbox[0] / fw) * vRect.w;
-    const y1 = vRect.y + (t.bbox[1] / fh) * vRect.h;
-    const x2 = vRect.x + (t.bbox[2] / fw) * vRect.w;
-    const y2 = vRect.y + (t.bbox[3] / fh) * vRect.h;
-    const centerY = (y1 + y2) / 2;
+    let x1 = vRect.x + (t.bbox[0] / fw) * vRect.w;
+    let y1 = vRect.y + (t.bbox[1] / fh) * vRect.h;
+    let x2 = vRect.x + (t.bbox[2] / fw) * vRect.w;
+    let y2 = vRect.y + (t.bbox[3] / fh) * vRect.h;
 
     const scaleX = vRect.w / fw;
     const scaleY = vRect.h / fh;
-    const vx = (t.vx || 0) * scaleX;
-    const vy = (t.vy || 0) * scaleY;
+    let vx = (t.vx || 0) * scaleX;
+    let vy = (t.vy || 0) * scaleY;
+
+    // Flip horizontally in Webcam selfie/mirror mode
+    if (state.source === 'webcam') {
+      const origX1 = x1;
+      const origX2 = x2;
+      x1 = vRect.x + (vRect.w - (origX2 - vRect.x));
+      x2 = vRect.x + (vRect.w - (origX1 - vRect.x));
+      vx = -vx;
+    }
+
+    const centerY = (y1 + y2) / 2;
     const speed = Math.round(Math.hypot(vx, vy) * 2.2) || 5;
 
     // Tripwire Crossing Check
@@ -713,6 +733,26 @@ async function initApp() {
   // 3. Initialize Decoupled WebGL AI Engine
   initWebAI();
 
+  
+  // Drag & drop video file support
+  const playerFrame = document.getElementById('video-player-frame');
+  if (playerFrame) {
+    playerFrame.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      playerFrame.classList.add('ring-2', 'ring-lime');
+    });
+    playerFrame.addEventListener('dragleave', () => {
+      playerFrame.classList.remove('ring-2', 'ring-lime');
+    });
+    playerFrame.addEventListener('drop', (e) => {
+      e.preventDefault();
+      playerFrame.classList.remove('ring-2', 'ring-lime');
+      if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]) {
+        handleVideoFile({ target: { files: e.dataTransfer.files } });
+      }
+    });
+  }
+
   // 4. Load default traffic clip with autoplay safety
   await setSource('sample', 'sample1');
 }
@@ -758,8 +798,16 @@ function processLoop() {
   const vRect = getVideoDrawRect(cw, ch);
 
   if (videoEl.readyState >= 2) {
-    // ALWAYS draw video frame with preserved aspect ratio
-    ctx.drawImage(videoEl, vRect.x, vRect.y, vRect.w, vRect.h);
+    // ALWAYS draw video frame with preserved aspect ratio (Flipped for Webcam mirror mode)
+    if (state.source === 'webcam') {
+      ctx.save();
+      ctx.translate(vRect.x + vRect.w, vRect.y);
+      ctx.scale(-1, 1);
+      ctx.drawImage(videoEl, 0, 0, vRect.w, vRect.h);
+      ctx.restore();
+    } else {
+      ctx.drawImage(videoEl, vRect.x, vRect.y, vRect.w, vRect.h);
+    }
     
     // Update live resolution indicator tag
     const resEl = document.getElementById('viewport-resolution');
@@ -1489,13 +1537,24 @@ async function setSource(src, sampleKey = currentSampleClip) {
 }
 
 function triggerVideoUpload() {
-  const input = document.getElementById('video-file-input');
-  if (input) input.click();
+  const input = document.getElementById('video-upload-input') || document.getElementById('video-file-input');
+  if (input) {
+    input.value = '';
+    input.click();
+  }
 }
 
 function handleVideoFile(event) {
-  const file = event.target.files[0];
+  const file = event.target.files && event.target.files[0];
   if (!file) return;
+
+  state.source = 'upload';
+  updateSourceButtons('upload');
+  
+  const sampleBox = document.getElementById('sample-preset-container');
+  if (sampleBox) sampleBox.style.display = 'none';
+
+  resetTracking();
 
   const url = URL.createObjectURL(file);
   const headerTitle = document.getElementById('viewport-header-title');
@@ -1509,6 +1568,7 @@ function handleVideoFile(event) {
   videoEl.src = url;
   videoEl.crossOrigin = 'anonymous';
   videoEl.muted = true;
+  videoEl.defaultMuted = true;
   videoEl.playsInline = true;
   videoEl.loop = true;
   state.isPaused = false;
@@ -1516,18 +1576,19 @@ function handleVideoFile(event) {
   videoEl.play().then(() => {
     updatePlayPauseButton('playing');
     addActivityLog('UPLOAD', `Loaded video file: ${file.name}`, 'lime');
-  }).catch(() => {
+  }).catch((err) => {
+    console.warn('Upload video autoplay:', err);
     state.isPaused = true;
     updatePlayPauseButton('paused');
+    addActivityLog('UPLOAD', `Video ready: ${file.name}. Click Play ▶ to begin.`, 'amber');
   });
 
-  // Try uploading to backend if Python active
   if (state.isPythonActive) {
     const formData = new FormData();
     formData.append('file', file);
     fetch('/api/upload', { method: 'POST', body: formData })
       .then(res => res.json())
-      .then(data => {
+      .then(() => {
         addActivityLog('UPLOAD', 'Video synced with Python YOLOv8 backend', 'lime');
       })
       .catch(() => {});
