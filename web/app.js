@@ -1,6 +1,6 @@
 /**
  * VisionGrid - High-Performance Object Detection & SORT Tracking
- * Powered by Client-Side WebGL GPU AI Engine + Native Kalman SORT Tracker
+ * Hybrid Engine: Decoupled 60 FPS WebGL GPU AI + High-Precision Python YOLOv8
  */
 
 // ==========================================
@@ -60,10 +60,11 @@ class KalmanBoxTracker {
     const cy = bbox[1] + h / 2;
 
     // Smooth velocity estimate with exponential moving average
-    const alpha = 0.4;
+    const alpha = 0.35;
     this.vx = this.vx * (1 - alpha) + (cx - this.cx) * alpha;
     this.vy = this.vy * (1 - alpha) + (cy - this.cy) * alpha;
     
+    // Smooth position update
     this.cx = cx;
     this.cy = cy;
     this.w = w;
@@ -80,7 +81,7 @@ class KalmanBoxTracker {
 }
 
 class WebSortTracker {
-  constructor(maxAge = 50, minHits = 1, iouThreshold = 0.2) {
+  constructor(maxAge = 40, minHits = 2, iouThreshold = 0.3) {
     this.maxAge = maxAge;
     this.minHits = minHits;
     this.iouThreshold = iouThreshold;
@@ -161,7 +162,7 @@ class WebSortTracker {
 
   getActiveTracks() {
     return this.trackers
-      .filter(t => t.timeSinceUpdate <= this.maxAge && t.hits >= this.minHits)
+      .filter(t => t.timeSinceUpdate <= this.maxAge && (t.hits >= this.minHits || t.age <= 1))
       .map(t => ({
         id: t.id,
         className: t.className,
@@ -174,7 +175,7 @@ class WebSortTracker {
   }
 }
 
-const webTracker = new WebSortTracker(50, 1, 0.2);
+const webTracker = new WebSortTracker(40, 2, 0.3);
 
 // ==========================================
 // 2. Global State & App Setup
@@ -185,7 +186,9 @@ const state = {
   isRecording: false,
   mediaRecorder: null,
   recordedChunks: [],
-  confThresh: 0.35,
+  ws: null,
+  isPythonActive: false,
+  confThresh: 0.45,
   maxAge: 25,
   linePos: 0.5,
   countIn: 0,
@@ -225,6 +228,14 @@ aiCanvas.height = 234;
 const aiCtx = aiCanvas.getContext('2d', { willReadFrequently: true });
 let isAiDetecting = false;
 let webModel = null;
+
+// Offscreen canvas for Python streaming if available
+const offscreenCanvas = document.createElement('canvas');
+offscreenCanvas.width = 416;
+offscreenCanvas.height = 234;
+const offscreenCtx = offscreenCanvas.getContext('2d', { willReadFrequently: true });
+let isWsProcessing = false;
+let lastWsSendTime = 0;
 
 // Class Categories Mapping for Top Filters
 const CLASS_CATEGORIES = {
@@ -330,7 +341,12 @@ function setBackendStatus(mode, text) {
 
   if (statusText) statusText.innerText = text;
 
-  if (mode === 'webai') {
+  if (mode === 'python') {
+    if (statusIcon) statusIcon.className = 'fa-brands fa-python text-sm text-lime';
+    if (statusDot) statusDot.className = 'relative inline-flex rounded-full h-2 w-2 bg-lime';
+    if (statusPing) statusPing.className = 'animate-ping absolute inline-flex h-full w-full rounded-full bg-lime opacity-75';
+    if (statusBadge) statusBadge.className = 'bg-obsidian-panel px-3 py-1.5 rounded-lg border border-lime/40 flex items-center text-xs font-semibold text-lime gap-2 shadow-glow-lime transition-all';
+  } else if (mode === 'webai') {
     if (statusIcon) statusIcon.className = 'fa-solid fa-bolt text-sm text-lime';
     if (statusDot) statusDot.className = 'relative inline-flex rounded-full h-2 w-2 bg-lime';
     if (statusPing) statusPing.className = 'animate-ping absolute inline-flex h-full w-full rounded-full bg-lime opacity-75';
@@ -358,7 +374,9 @@ async function initWebAI() {
     
     if (typeof cocoSsd !== 'undefined') {
       webModel = await cocoSsd.load({ base: 'mobilenet_v2' });
-      setBackendStatus('webai', 'Browser AI (WebGL GPU · 60 FPS)');
+      if (!state.isPythonActive) {
+        setBackendStatus('webai', 'Browser AI (WebGL GPU · 60 FPS)');
+      }
       addActivityLog('ENGINE', 'Initialized Browser WebGL AI (60 FPS Decoupled)', 'lime');
       startDecoupledAiLoop();
     } else {
@@ -373,13 +391,14 @@ async function initWebAI() {
       }
       if (typeof cocoSsd !== 'undefined') {
         webModel = await cocoSsd.load();
-        setBackendStatus('webai', 'Browser AI (CPU Fallback · 60 FPS)');
+        if (!state.isPythonActive) {
+          setBackendStatus('webai', 'Browser AI (CPU Fallback · 60 FPS)');
+        }
         addActivityLog('ENGINE', 'Initialized Browser Web AI (CPU Fallback)', 'cyan');
         startDecoupledAiLoop();
       }
     } catch (err) {
       console.error('All Web AI initialization failed:', err);
-      addActivityLog('ERROR', 'Web AI initialization failed', 'red');
     }
   }
 }
@@ -389,7 +408,7 @@ function startDecoupledAiLoop() {
     try {
       const isVideoReady = videoEl && (videoEl.readyState >= 2 || videoEl.videoWidth > 0);
       const isPlaying = videoEl && !videoEl.paused && !videoEl.ended;
-      const shouldDetect = webModel && isVideoReady && (isPlaying || !state.isPaused || state.source === 'upload');
+      const shouldDetect = webModel && isVideoReady && !state.isPythonActive && (isPlaying || !state.isPaused || state.source === 'upload');
 
       if (shouldDetect && !isAiDetecting) {
         isAiDetecting = true;
@@ -408,7 +427,7 @@ function startDecoupledAiLoop() {
 
         aiCtx.drawImage(videoEl, 0, 0, sendW, sendH);
 
-        const rawDets = await webModel.detect(aiCanvas, 30, state.confThresh);
+        const rawDets = await webModel.detect(aiCanvas, 20, state.confThresh);
         const latency = Math.max(1, performance.now() - t0);
         state.latency = latency;
 
@@ -482,7 +501,102 @@ function syncWebTracksToState(vRect, fw, fh) {
 }
 
 // ==========================================
-// 4. App Initialization & Render Loop
+// 4. Optional Python Backend Connection
+// ==========================================
+function tryConnectPythonWs() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  try {
+    const ws = new WebSocket(`${proto}//${location.host}/ws/stream`);
+    ws.onopen = () => {
+      state.ws = ws;
+      state.isPythonActive = true;
+      setBackendStatus('python', 'Python Backend (YOLOv8 + SORT)');
+      addActivityLog('ENGINE', 'Connected to Python Backend (YOLOv8 + SORT)', 'lime');
+    };
+    ws.onmessage = (event) => {
+      isWsProcessing = false;
+      try {
+        const data = JSON.parse(event.data);
+        if (data.meta && data.meta.latency_ms) state.latency = data.meta.latency_ms;
+        if (data.total_tracks !== undefined) state.totalTracks = data.total_tracks;
+        if (data.tracks) {
+          const fw = data.frame_w || 640;
+          const fh = data.frame_h || 360;
+          const rect = canvasEl.getBoundingClientRect();
+          const vRect = getVideoDrawRect(rect.width, rect.height);
+          const lineY = vRect.y + vRect.h * state.linePos;
+
+          state.activeTracks = data.tracks.map(t => {
+            const x1 = vRect.x + (t.bbox[0] / fw) * vRect.w;
+            const y1 = vRect.y + (t.bbox[1] / fh) * vRect.h;
+            const x2 = vRect.x + (t.bbox[2] / fw) * vRect.w;
+            const y2 = vRect.y + (t.bbox[3] / fh) * vRect.h;
+            const centerY = (y1 + y2) / 2;
+
+            if (state.toggles.line && !state.crossedIds[t.id]) {
+              if (Math.abs(centerY - lineY) < 20) {
+                state.crossedIds[t.id] = true;
+                if (t.vy < 0) {
+                  state.countOut += 1;
+                  addActivityLog(`ID #${t.id}`, `Crossed Tripwire UP [OUT]`, 'lime');
+                } else {
+                  state.countIn += 1;
+                  addActivityLog(`ID #${t.id}`, `Crossed Tripwire DOWN [IN]`, 'cyan');
+                }
+              }
+            }
+
+            return {
+              id: t.id,
+              className: t.class_name || 'object',
+              score: t.score,
+              bbox: [x1, y1, x2, y2],
+              speed: Math.round(Math.hypot(t.vx, t.vy) * 2.2) || 5,
+              vx: t.vx,
+              vy: t.vy
+            };
+          });
+        }
+      } catch (e) {}
+    };
+    ws.onclose = () => {
+      state.isPythonActive = false;
+      state.ws = null;
+      if (webModel) setBackendStatus('webai', 'Browser AI (WebGL GPU · 60 FPS)');
+    };
+    ws.onerror = () => {
+      state.isPythonActive = false;
+    };
+  } catch (e) {
+    state.isPythonActive = false;
+  }
+}
+
+// Fast Decoupled Frame Encoding to Python Backend
+function sendFrameToPython() {
+  if (!state.ws || state.ws.readyState !== WebSocket.OPEN || isWsProcessing || state.isPaused) return;
+  const now = performance.now();
+  if (now - lastWsSendTime < 65) return; // Throttle to prevent WebSocket buffer congestion
+  lastWsSendTime = now;
+
+  const vw = videoEl.videoWidth || 640;
+  const vh = videoEl.videoHeight || 360;
+  const sendW = 416;
+  const sendH = Math.max(1, Math.round(sendW * (vh / vw)));
+
+  if (offscreenCanvas.width !== sendW || offscreenCanvas.height !== sendH) {
+    offscreenCanvas.width = sendW;
+    offscreenCanvas.height = sendH;
+  }
+
+  offscreenCtx.drawImage(videoEl, 0, 0, sendW, sendH);
+  const dataUrl = offscreenCanvas.toDataURL('image/jpeg', 0.55);
+  isWsProcessing = true;
+  state.ws.send(JSON.stringify({ action: 'process_frame', image: dataUrl }));
+}
+
+// ==========================================
+// 5. App Initialization & Render Loop
 // ==========================================
 async function initApp() {
   initTheme();
@@ -493,10 +607,13 @@ async function initApp() {
   // 1. Start 60.0 FPS native render loop immediately
   requestAnimationFrame(processLoop);
 
-  // 2. Initialize Decoupled WebGL AI Engine for standalone / GitHub Pages deployment
+  // 2. Try connecting to local Python backend if available
+  tryConnectPythonWs();
+
+  // 3. Initialize Decoupled WebGL AI Engine
   initWebAI();
 
-  // 3. Load default traffic clip with autoplay safety
+  // 4. Load default traffic clip with autoplay safety
   await setSource('sample', 'sample1');
 }
 
@@ -550,9 +667,13 @@ function processLoop() {
       resEl.innerText = `[${videoEl.videoWidth}x${videoEl.videoHeight} @ 60Hz]`;
     }
 
-    // 60 FPS Kalman Prediction Step (Glides boxes seamlessly across frames)
-    webTracker.predictAll();
-    syncWebTracksToState(vRect, aiCanvas.width || 416, aiCanvas.height || 234);
+    if (state.isPythonActive) {
+      sendFrameToPython();
+    } else {
+      // 60 FPS Kalman Prediction Step (Glides boxes seamlessly across frames)
+      webTracker.predictAll();
+      syncWebTracksToState(vRect, aiCanvas.width || 416, aiCanvas.height || 234);
+    }
   }
 
   renderOverlays(cw, ch, vRect);
@@ -1090,6 +1211,12 @@ async function resetTracking() {
   state.activeTracks = [];
   state.rawTracks = [];
   webTracker.reset();
+
+  if (state.isPythonActive) {
+    try {
+      await fetch('/api/reset', { method: 'POST' });
+    } catch (e) {}
+  }
   addActivityLog('TRACKER', 'SORT tracker reset', 'amber');
 }
 
@@ -1104,7 +1231,7 @@ function toggleFullscreen() {
 function exportData(format) {
   const data = {
     exportedAt: new Date().toISOString(),
-    engine: 'VisionGrid WebGL AI + SORT',
+    engine: state.isPythonActive ? 'Python YOLOv8 + SORT' : 'VisionGrid WebGL AI + SORT',
     metrics: {
       fps: state.fps.toFixed(1),
       latencyMs: state.latency.toFixed(1),
@@ -1303,12 +1430,30 @@ function handleVideoFile(event) {
 function updateConfidence(val) {
   state.confThresh = parseFloat(val) / 100;
   document.getElementById('conf-val').innerText = `${val}%`;
+  if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+    try {
+      fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ conf_thresh: state.confThresh })
+      });
+    } catch (e) {}
+  }
 }
 
 function updateMaxAge(val) {
   state.maxAge = parseInt(val, 10);
   webTracker.maxAge = Math.max(15, state.maxAge * 2);
   document.getElementById('age-val').innerText = `${val} frames`;
+  if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+    try {
+      fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ max_age: state.maxAge })
+      });
+    } catch (e) {}
+  }
 }
 
 function updateLinePos(val) {
@@ -1339,7 +1484,7 @@ function filterClass(cls, btn) {
 
 // Video Event Listeners
 videoEl.addEventListener('loadeddata', () => {
-  if (webModel) {
+  if (webModel && !state.isPythonActive) {
     const vw = videoEl.videoWidth || 640;
     const vh = videoEl.videoHeight || 360;
     const sendW = 416;
@@ -1348,7 +1493,7 @@ videoEl.addEventListener('loadeddata', () => {
     aiCanvas.height = sendH;
     try {
       aiCtx.drawImage(videoEl, 0, 0, sendW, sendH);
-      webModel.detect(aiCanvas, 30, state.confThresh).then(rawDets => {
+      webModel.detect(aiCanvas, 20, state.confThresh).then(rawDets => {
         const formattedDets = (rawDets || []).map(d => ({
           bbox: [d.bbox[0], d.bbox[1], d.bbox[0] + d.bbox[2], d.bbox[1] + d.bbox[3]],
           score: d.score,

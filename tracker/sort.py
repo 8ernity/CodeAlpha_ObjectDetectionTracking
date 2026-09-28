@@ -149,7 +149,7 @@ class KalmanBoxTracker:
         return float(self.x[4, 0]), float(self.x[5, 0])
 
 
-def associate_detections_to_trackers(detections, trackers, iou_threshold=0.3):
+def associate_detections_to_trackers(detections, trackers, iou_threshold=0.35):
     if len(trackers) == 0:
         return np.empty((0, 2), dtype=int), np.arange(len(detections)), np.empty((0, 5), dtype=int)
 
@@ -191,7 +191,7 @@ def associate_detections_to_trackers(detections, trackers, iou_threshold=0.3):
 
 
 class Sort:
-    def __init__(self, max_age=15, min_hits=2, iou_threshold=0.3):
+    def __init__(self, max_age=15, min_hits=2, iou_threshold=0.35):
         self.max_age = max_age
         self.min_hits = min_hits
         self.iou_threshold = iou_threshold

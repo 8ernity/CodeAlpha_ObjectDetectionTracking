@@ -40,8 +40,8 @@ os.makedirs(SAMPLE_DIR, exist_ok=True)
 # State
 class PipelineState:
     def __init__(self):
-        self.detector = ObjectDetector(model_name="yolov8n.pt", conf_thresh=0.35, iou_thresh=0.45)
-        self.tracker = Sort(max_age=25, min_hits=2, iou_threshold=0.3)
+        self.detector = ObjectDetector(model_name="yolov8n.pt", conf_thresh=0.45, iou_thresh=0.45)
+        self.tracker = Sort(max_age=30, min_hits=2, iou_threshold=0.35)
 
 state = PipelineState()
 
